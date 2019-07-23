@@ -1,0 +1,1193 @@
+
+; 64tass Turbo Assembler Macro V1.54.1900 listing file
+; 64tass -c -b -o cegmon.rom -L cegmon.lst cegmon.asm
+; Tue Jul 23 09:48:04 2019
+
+;Offset	;Hex		;Monitor	;Source
+
+;******  Processing input file: cegmon.asm
+
+=$a000					BasicROM =  $A000   ; basic rom
+=$c000					DiskController = $C000   ; diskcontroller controller (pia = +$00, acia = +$10)
+=$d000					Screen =   $D000   ; screen ram
+=$df00					Keyboard =   $DF00   ; keyboard port
+=$f000					acia = $f000 ; serial port (mc6850 acia) for c1/superboard/uk101
+=$0					Offset = $0  ; no offset needed for c1/sb
+=$0000					BASIC_WarmStart = $0000						; BASIC routines.
+=$bd11					BASIC_ColdStart = $BD11
+=$a636					BASIC_ControlC = $A636
+=$bf2d					BASIC_OldScreenHandler = $BF2D
+=$a374					UK101_RubOut1 = $A374
+=$a34b					UK101_RubOut2 = $A34B
+=$130					NMIHandler = $130  							; nmi address
+=$1c0					IRQHandler = $1C0  							; irq address
+=$e					CharsSinceCR = $E 							; chars printed since CR
+=$e0					BrkA = $E0 									; register storage in breaj.
+=$e1					BrkX = $E1
+=$e2					BrkY = $E2
+=$e3					BrkP = $E3
+=$e4					BrkS = $E4
+=$e5					BrkPCL = $E5
+=$e6					BrkPCH = $E6
+=$e4					CopyTarget = $E4 							; copy target address
+=$e7					OldOpcode = $E7   							; opcode replaced when BrK set
+=$f9					ToAddress = $F9   							; "To" address
+=$fb					InputFromSerial = $FB 						; if non-zero input from ACIA
+=$fc					CurrentData = $FC   						; Store for current data
+=$fd					FDDBootstrap = $FD 							; word used to run bootstrapped FDD
+=$fe					FromAddress = $FE   						; "From" address
+=$200					CursorX = $200    							; cursor displacement current char.
+=$201					OldCharacter = $201  						; current character during SCREEN
+=$202					NewChar = $202    							; new character
+=$203					ACIALoadFlag = $203  						; $00 off, $ff acia load
+=$204					EditFlag = $204   							; $00 no edit cursor, $ff edit cursor
+=$205					ACIASaveFlag = $205  						; $00 off, $ff save to acia
+=$206					ScreenDelay = $206   						; screen delay (400 cycles/count)
+=$212					BreakDisabled = $212  						; non-zero if break disabled.
+=$213					CurrentKeyIndex = $213 						; key index pressed
+=$214					AutoRepeatCount = $214  					; auto repeat count.
+=$215					FinalKey = $215   							; final value of key (ascii)
+=$216					LastChar = $216   							; pre shift lst char for repeat.
+=$222					LastCharOnLine = $222  						; index of last character on line.
+=$223					FirstScreenChar = $223 						; first character visible
+=$225					LastScreenChar = $225 						; last character visible
+=$227					ScrollCopier = $227 						; RAM based scroll copier.
+=$228					CharSrcPos = $228
+=$22a					ProcessFromTopAndDexEdit = $22A 			; do something abs,x ; dex ; rts
+=$22b					CharPosition = $22B
+=$22f					EditCursorDisp = $22F  						; edit cursor displacement
+=$230					EditCursorChar = $230  						; character under edit cursor
+=$231					EditCursorLine = $231  						; Edit cursors line on screen
+=$233					UserRoutine = $233   						; Users machine code routine.
+=32					LineWidth = 32  							; screen width
+=0					ScreenSize = 0  							; screen size 0=1k 1=2k
+=133					FirstVisible = 133 							; set screen offset
+=24					ColumnsVisible = 24 						; set columns to display
+=24					RowsVisible = 24  							; set rows to display
+=23					LineLengthMinus1 = ColumnsVisible-1 		; index of last character
+=53381					ScreenVisibleTop = Screen+FirstVisible 		; positions within screen.
+=54117					ScreenVisibleBottom = (RowsVisible-1)*LineWidth+ScreenVisibleTop
+=54272					ScreenMemoryEnd =  (ScreenSize+1)*1024+Screen
+.f800					RuboutCode:
+.f800	a5 0e		lda $0e			lda  CharsSinceCR 							; adjust chars since CR
+.f802	f0 06		beq $f80a		beq  DoRubout
+.f804	c6 0e		dec $0e			dec  CharsSinceCR
+.f806	f0 02		beq $f80a		beq  DoRubout
+.f808	c6 0e		dec $0e			dec  CharsSinceCR
+.f80a					DoRubout:
+.f80a	a9 20		lda #$20		lda  #' ' 									; overwrite cursor
+.f80c	8d 01 02	sta $0201		sta  OldCharacter
+.f80f	20 8f ff	jsr $ff8f		jsr  PrintCharacterAtCurrent
+.f812	10 19		bpl $f82d		bpl  NotPrevLine
+.f814	38		sec			sec  										; go up one line
+.f815	ad 2b 02	lda $022b		lda  CharPosition
+.f818	e9 20		sbc #$20		sbc  #LineWidth
+.f81a	8d 2b 02	sta $022b		sta  CharPosition
+.f81d	ad 2c 02	lda $022c		lda  CharPosition+1
+.f820	e9 00		sbc #$00		sbc  #0
+.f822	8d 2c 02	sta $022c		sta  CharPosition+1
+.f825	20 cf fb	jsr $fbcf		jsr  CheckScreenBottomXLast 				; check off, home cursor if so.
+.f828	b0 03		bcs $f82d		bcs  NotPrevLine
+.f82a	20 d1 ff	jsr $ffd1		jsr  HomeCursor
+.f82d					NotPrevLine:
+.f82d	8e 00 02	stx $0200		stx  CursorX
+.f830	20 88 ff	jsr $ff88		jsr  PrintCursor
+.f833	4c d2 f8	jmp $f8d2		jmp  NewScreenHandlerExit
+.f836					NewScreenHandler:
+.f836	8d 02 02	sta $0202		sta  NewChar 								; save character
+.f839	48		pha			pha   										; save AXY
+.f83a	8a		txa			txa
+.f83b	48		pha			pha
+.f83c	98		tya			tya
+.f83d	48		pha			pha
+.f83e	ad 02 02	lda $0202		lda  NewChar 								; get character
+.f841	d0 03		bne $f846		bne  NotNull                                ; exit immediately if NULL
+.f843	4c d2 f8	jmp $f8d2		jmp  NewScreenHandlerExit
+.f846					NotNull:
+.f846	ac 06 02	ldy $0206		ldy  ScreenDelay                            ; screen delay ?
+.f849	f0 03		beq $f84e		beq  NoDelay
+.f84b	20 e1 fc	jsr $fce1		jsr  Delay2-Offset 							; if so, call the routine.
+.f84e					NoDelay:
+.f84e	c9 5f		cmp #$5f		cmp  #$5F 									; _ is the rubout character
+.f850	f0 ae		beq $f800		beq  RuboutCode
+.f852	c9 0c		cmp #$0c		cmp  #$C 									; check for Ctrl-L
+.f854	d0 0b		bne $f861		bne  NotCtrlL
+.f856	20 8c ff	jsr $ff8c		jsr  PrintOldCharacterAtCurrent 			; restore char under cursor and home it.
+.f859	20 d1 ff	jsr $ffd1		jsr  HomeCursor
+.f85c	8e 00 02	stx $0200		stx  CursorX
+.f85f	f0 6e		beq $f8cf		beq  NSHRawPrint 							; raw print something ? why ?
+.f861					NotCtrlL:
+.f861	c9 0a		cmp #$0a		cmp  #$A 									; line feed
+.f863	f0 27		beq $f88c		beq  NSHLineFeed
+.f865	c9 1e		cmp #$1e		cmp  #$1E 									; Ctrl-Shift-N
+.f867	f0 77		beq $f8e0		beq  ControlShiftNHandler
+.f869	c9 0b		cmp #$0b		cmp  #$B
+.f86b	f0 10		beq $f87d		beq  NSHOverwriteCursor
+.f86d	c9 1a		cmp #$1a		cmp  #$1A									; Ctrl-Z
+.f86f	f0 67		beq $f8d8		beq  ControlZHandler
+.f871	c9 0d		cmp #$0d		cmp  #$D 									; carriage return.
+.f873	d0 05		bne $f87a		bne  NSHNotCarriageReturn
+.f875	20 6d ff	jsr $ff6d		jsr  PrintRawOldCharacter 					; print the old character
+.f878	d0 58		bne $f8d2		bne  NewScreenHandlerExit 					; and exit.
+.f87a					NSHNotCarriageReturn:
+.f87a	8d 01 02	sta $0201		sta  OldCharacter 							; save character so we write that one out.
+.f87d					NSHOverwriteCursor:
+.f87d	20 8c ff	jsr $ff8c		jsr  PrintOldCharacterAtCurrent 			; remove cursor with old character
+.f880	ee 00 02	inc $0200		inc  CursorX 								; increment position.
+.f883	e8		inx			inx
+.f884	ec 22 02	cpx $0222		cpx  LastCharOnLine 						; reached the end.
+.f887	30 46		bmi $f8cf		bmi  NSHRawPrint 							; if not, do normal.
+.f889	20 70 ff	jsr $ff70		jsr  PrintRawStartOfLineA 					; otherwise print at start of next line.
+.f88c					NSHLineFeed:
+.f88c	20 8c ff	jsr $ff8c		jsr  PrintOldCharacterAtCurrent 			; restore cursor
+.f88f	a0 02		ldy #$02		ldy  #2
+.f891	20 d2 fb	jsr $fbd2		jsr  CheckScreenBottom 						; check off the bottom
+.f894	b0 08		bcs $f89e		bcs  NSHScrollUp
+.f896	a2 03		ldx #$03		ldx  #3 									; go down one line.
+.f898	20 ee fd	jsr $fdee		jsr  DownOneLine
+.f89b	4c cf f8	jmp $f8cf		jmp  NSHRawPrint
+.f89e					NSHScrollUp:
+.f89e	20 28 fe	jsr $fe28		jsr  MoveUp 								; move edit cursor up to start of last line
+.f8a1	20 d1 ff	jsr $ffd1		jsr  HomeCursor 							; reset all
+.f8a4	20 ee fd	jsr $fdee		jsr  DownOneLine 							; down one line.
+.f8a7	ae 22 02	ldx $0222		ldx  LastCharOnLine							; start scrolling
+.f8aa					ScrollCopyLoop:
+.f8aa	20 27 02	jsr $0227		jsr  ScrollCopier 							; copy one line.
+.f8ad	10 fb		bpl $f8aa		bpl  ScrollCopyLoop
+.f8af	e8		inx			inx   										; advance pointers
+.f8b0	20 ee fd	jsr $fdee		jsr  DownOneLine
+.f8b3	a2 03		ldx #$03		ldx  #3
+.f8b5	20 ee fd	jsr $fdee		jsr  DownOneLine
+.f8b8	20 cf fb	jsr $fbcf		jsr  CheckScreenBottomXLast 				; reached the bottom.
+.f8bb	90 ed		bcc $f8aa		bcc  ScrollCopyLoop
+.f8bd	a9 20		lda #$20		lda  #' '									; blank the bottom line.
+.f8bf					ScrollEraseLastLine:
+.f8bf	20 2a 02	jsr $022a		jsr  ProcessFromTopAndDexEdit
+.f8c2	10 fb		bpl $f8bf		bpl  ScrollEraseLastLine
+.f8c4	a2 01		ldx #$01		ldx  #1 									; clear first character.
+.f8c6					ClearStart:
+.f8c6	bd 23 02	lda $0223,x		lda  FirstScreenChar,X
+.f8c9	9d 28 02	sta $0228,x		sta  CharSrcPos,X
+.f8cc	ca		dex			dex
+.f8cd	10 f7		bpl $f8c6		bpl  ClearStart
+.f8cf					NSHRawPrint:
+.f8cf	20 75 ff	jsr $ff75		jsr  PrintRawCurrentA 						; print it whatever.
+.f8d2					NewScreenHandlerExit:
+.f8d2	68		pla			pla
+.f8d3	a8		tay			tay
+.f8d4	68		pla			pla
+.f8d5	aa		tax			tax
+.f8d6	68		pla			pla
+.f8d7	60		rts			rts
+.f8d8					ControlZHandler:
+.f8d8	20 59 fe	jsr $fe59		jsr  ClearScreen
+.f8db	8d 01 02	sta $0201		sta  OldCharacter
+.f8de	f0 24		beq $f904		beq  HomeAndExit
+.f8e0					ControlShiftNHandler:
+.f8e0	a9 20		lda #$20		lda  #' '									; erase and home cursor
+.f8e2	20 8f ff	jsr $ff8f		jsr  PrintCharacterAtCurrent
+.f8e5	20 d1 ff	jsr $ffd1		jsr  HomeCursor
+.f8e8					ClearEOS:
+.f8e8	ae 22 02	ldx $0222		ldx  LastCharOnLine 						; clear to start of line.
+.f8eb	a9 20		lda #$20		lda  #' '
+.f8ed					ClearStartOfLine:
+.f8ed	20 2a 02	jsr $022a		jsr  ProcessFromTopAndDexEdit
+.f8f0	10 fb		bpl $f8ed		bpl  ClearStartOfLine
+.f8f2	8d 01 02	sta $0201		sta  OldCharacter
+.f8f5	a0 02		ldy #$02		ldy  #2 									; go down one line if you can.
+.f8f7	20 d2 fb	jsr $fbd2		jsr  CheckScreenBottom
+.f8fa	b0 08		bcs $f904		bcs  HomeAndExit
+.f8fc	a2 03		ldx #$03		ldx  #3
+.f8fe	20 ee fd	jsr $fdee		jsr  DownOneLine
+.f901	4c e8 f8	jmp $f8e8		jmp  ClearEOS 								; and clear that too.
+.f904					HomeAndExit:
+.f904	20 d1 ff	jsr $ffd1		jsr  HomeCursor
+.f907	8e 00 02	stx $0200		stx  CursorX
+.f90a	f0 c6		beq $f8d2		beq  NewScreenHandlerExit
+.f90c					MONTabDisplay:
+.f90c	20 a6 f9	jsr $f9a6		jsr  Collect2Addr 							; collect start/end
+.f90f					MONTabMain:
+.f90f	20 f5 fb	jsr $fbf5		jsr  PrintCRLF 								; print out addr etc.
+.f912	20 b6 fe	jsr $feb6		jsr  PrintAddr
+.f915	20 e6 fb	jsr $fbe6		jsr  PrintSpace
+.f918	20 e0 fb	jsr $fbe0		jsr  PrintGreater
+.f91b	a2 10		ldx #$10		ldx  #$10                                   ; # bytes displayed
+.f91d	86 fd		stx $fd			stx  CurrentData+1
+.f91f					MONTabByte:
+.f91f	20 e6 fb	jsr $fbe6		jsr  PrintSpace							 	; display one byte
+.f922	20 f0 fe	jsr $fef0		jsr  PrintByteAtFE
+.f925	20 eb fb	jsr $fbeb		jsr  CheckEnd 								; done the whole tab as required
+.f928	b0 51		bcs $f97b		bcs  MONResetSAndCmd
+.f92a	20 f9 fe	jsr $fef9		jsr  BumpAddress
+.f92d	c6 fd		dec $fd			dec  CurrentData+1 							; do row of 16
+.f92f	d0 ee		bne $f91f		bne  MONTabByte
+.f931	f0 dc		beq $f90f		beq  MONTabMain
+.f933					MONCopyBlock:
+.f933	20 bd ff	jsr $ffbd		jsr  Collect3Addr
+.f936	20 e4 fd	jsr $fde4		jsr  CopyBlock
+.f939	b0 43		bcs $f97e		bcs  MonitorCmdAddrMode
+.f93b					MONContinueAfterBreak:
+.f93b	a6 e4		ldx $e4			ldx  CopyTarget 							; put stack position in S
+.f93d	9a		txs			txs
+.f93e	a5 e6		lda $e6			lda  BrkPCH 									; PC
+.f940	48		pha			pha
+.f941	a5 e5		lda $e5			lda  BrkPCL
+.f943	48		pha			pha
+.f944	a5 e3		lda $e3			lda  BrkP 									; P
+.f946	48		pha			pha
+.f947	a5 e0		lda $e0			lda  BrkA 									; load AXY
+.f949	a6 e1		ldx $e1			ldx  BrkX
+.f94b	a4 e2		ldy $e2			ldy  BrkY
+.f94d	40		rti			rti   										; and do an RTI to load the P PC in.
+.f94e					MONSetBreakpoint:
+.f94e	a2 03		ldx #$03		ldx  #3 									; overwrite the vectors
+.f950					MONSetVectorLoop:
+.f950	bd 4b fa	lda $fa4b,x		lda  MONInterruptBreakVector-1,X
+.f953	9d bf 01	sta $01bf,x		sta  IRQHandler-1,X
+.f956	ca		dex			dex
+.f957	d0 f7		bne $f950		bne  MONSetVectorLoop
+.f959	20 8d fe	jsr $fe8d		jsr  GetNew 								; get one address
+.f95c	20 b5 f9	jsr $f9b5		jsr  Collect1Addr
+.f95f	b1 fe		lda ($fe),y		lda  (FromAddress),Y 						; get what was there
+.f961	85 e7		sta $e7			sta  OldOpcode 								; and save it.
+.f963	98		tya			tya
+.f964	91 fe		sta ($fe),y		sta  (FromAddress),Y 						; put a $00 there.
+.f966	f0 16		beq $f97e		beq  MonitorCmdAddrMode
+.f968					MONSaveMachineCode:
+.f968	4c 7e fa	jmp $fa7e		jmp  SaveMachineCode
+.f96b					MONLoadMachineCode:
+.f96b	c6 fb		dec $fb			dec  InputFromSerial
+.f96d	d0 79		bne $f9e8		bne  MONEnterDataMode
+.f96f					MONCheckTab2:
+.f96f	f0 9b		beq $f90c		beq  MONTabDisplay
+.f971					Exit3:
+.f971	60		rts			rts
+.f972					MONError:
+.f972	a5 fb		lda $fb			lda  InputFromSerial
+.f974	d0 fb		bne $f971		bne  Exit3
+.f976	a9 3f		lda #$3f		lda  #'?'
+.f978	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.f97b					MONResetSAndCmd:
+.f97b	a2 28		ldx #$28		ldx  #$28
+.f97d	9a		txs			txs
+.f97e					MonitorCmdAddrMode:
+.f97e	20 f5 fb	jsr $fbf5		jsr  PrintCRLF 								; CR and use keyboard
+.f981	a0 00		ldy #$00		ldy  #0
+.f983	84 fb		sty $fb			sty  InputFromSerial
+.f985	20 e0 fb	jsr $fbe0		jsr  PrintGreater 							; prompt
+.f988					MONGetCommand:
+.f988	20 8d fe	jsr $fe8d		jsr  GetNew 								; get and dispatch command accordingly.
+.f98b	c9 4d		cmp #$4d		cmp  #'M'
+.f98d	f0 a4		beq $f933		beq  MONCopyBlock
+.f98f	c9 52		cmp #$52		cmp  #'R'
+.f991	f0 a8		beq $f93b		beq  MONContinueAfterBreak
+.f993	c9 5a		cmp #$5a		cmp  #'Z'
+.f995	f0 b7		beq $f94e		beq  MONSetBreakpoint
+.f997	c9 53		cmp #$53		cmp  #'S'
+.f999	f0 cd		beq $f968		beq  MONSaveMachineCode
+.f99b	c9 4c		cmp #$4c		cmp  #'L'
+.f99d	f0 cc		beq $f96b		beq  MONLoadMachineCode
+.f99f	c9 55		cmp #$55		cmp  #'U'
+.f9a1	d0 33		bne $f9d6		bne  MONCheckTab
+.f9a3	6c 33 02	jmp ($0233)		jmp  (UserRoutine)
+.f9a6					Collect2Addr:
+.f9a6	20 8d fe	jsr $fe8d		jsr  GetNew
+.f9a9	20 b5 f9	jsr $f9b5		jsr  Collect1Addr
+.f9ac	20 e3 fb	jsr $fbe3		jsr  PrintComma
+.f9af	a2 00		ldx #$00		ldx  #0
+.f9b1					CollectExtraAddress:
+.f9b1	20 8d fe	jsr $fe8d		jsr  GetNew
+>f9b4	2c					.byte $2C
+.f9b5					Collect1Addr:
+.f9b5	a2 05		ldx #$05		ldx  #5 									; get offset 5
+.f9b7	20 c0 f9	jsr $f9c0		jsr  GetOffset
+.f9ba	20 8d fe	jsr $fe8d		jsr  GetNew 								; get next
+>f9bd	2c					.byte $2C
+.f9be					GetPrc:
+.f9be	a2 03		ldx #$03		ldx  #3 									; get into FC
+.f9c0					GetOffset:
+.f9c0	20 c6 f9	jsr $f9c6		jsr  InputRoll1 							; roll 1 nibble in
+.f9c3	20 8d fe	jsr $fe8d		jsr  GetNew 								; get character
+.f9c6					InputRoll1:
+.f9c6	c9 2e		cmp #$2e		cmp  #'.'									; handle / and .
+.f9c8	f0 be		beq $f988		beq  MONGetCommand
+.f9ca	c9 2f		cmp #$2f		cmp  #'/'
+.f9cc	f0 1a		beq $f9e8		beq  MONEnterDataMode
+.f9ce	20 93 fe	jsr $fe93		jsr  ASCIIToBinary							; binary ?
+.f9d1	30 9f		bmi $f972		bmi  MONError
+.f9d3	4c da fe	jmp $feda		jmp  RollNibbleToWord 						; if okay roll it in.
+.f9d6					MONCheckTab:
+.f9d6	c9 54		cmp #$54		cmp  #'T'
+.f9d8	f0 95		beq $f96f		beq  MONCheckTab2
+.f9da	20 b5 f9	jsr $f9b5		jsr  Collect1Addr
+.f9dd					MONDataMain:
+.f9dd	a9 2f		lda #$2f		lda  #'/'
+.f9df	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.f9e2	20 f0 fe	jsr $fef0		jsr  PrintByteAtFE
+.f9e5	20 e6 fb	jsr $fbe6		jsr  PrintSpace
+.f9e8					MONEnterDataMode:
+.f9e8	20 8d fe	jsr $fe8d		jsr  GetNew 								; get character
+.f9eb	c9 47		cmp #$47		cmp  #'G' 									; G is run from here.
+.f9ed	d0 03		bne $f9f2		bne  MONNotRun
+.f9ef	6c fe 00	jmp ($00fe)		jmp  (FromAddress)
+.f9f2					MONNotRun:
+.f9f2	c9 2c		cmp #$2c		cmp  #','
+.f9f4	d0 06		bne $f9fc		bne  MONNotComma
+.f9f6	20 f9 fe	jsr $fef9		jsr  BumpAddress 							; slip over this byte.
+.f9f9	4c e8 f9	jmp $f9e8		jmp  MONEnterDataMode
+.f9fc					MONNotComma:
+.f9fc	c9 0a		cmp #$0a		cmp  #$A 									; handle CR/LF Bump address
+.f9fe	f0 16		beq $fa16		beq  MONDataAfterLF
+.fa00	c9 0d		cmp #$0d		cmp  #$D
+.fa02	f0 17		beq $fa1b		beq  MONDataAfterCR
+.fa04	c9 5e		cmp #$5e		cmp  #'^' 									; move backwards.
+.fa06	f0 19		beq $fa21		beq  MONBackwards
+.fa08	c9 27		cmp #$27		cmp  #$27 									; enter text.
+.fa0a	f0 2e		beq $fa3a		beq  MONEnterText
+.fa0c	20 be f9	jsr $f9be		jsr  GetPrc 								; get byte
+.fa0f	a5 fc		lda $fc			lda  CurrentData 							; write it out
+.fa11	91 fe		sta ($fe),y		sta  (FromAddress),Y
+.fa13					MONGotoDataMode:
+.fa13	4c e8 f9	jmp $f9e8		jmp  MONEnterDataMode
+.fa16					MONDataAfterLF:
+.fa16	a9 0d		lda #$0d		lda  #$D
+.fa18	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.fa1b					MONDataAfterCR:
+.fa1b	20 f9 fe	jsr $fef9		jsr  BumpAddress
+.fa1e	4c 31 fa	jmp $fa31		jmp  MONPrintAndDataLoop
+.fa21					MONBackwards:
+.fa21	38		sec			sec   										; go backwards !
+.fa22	a5 fe		lda $fe			lda  FromAddress
+.fa24	e9 01		sbc #$01		sbc  #1
+.fa26	85 fe		sta $fe			sta  FromAddress
+.fa28	a5 ff		lda $ff			lda  FromAddress+1
+.fa2a	e9 00		sbc #$00		sbc  #0
+.fa2c	85 ff		sta $ff			sta  FromAddress+1
+.fa2e					MonitorDataModeLoop:
+.fa2e	20 f5 fb	jsr $fbf5		jsr  PrintCRLF
+.fa31					MONPrintAndDataLoop:
+.fa31	20 b6 fe	jsr $feb6		jsr  PrintAddr
+.fa34	4c dd f9	jmp $f9dd		jmp  MONDataMain
+.fa37					MONNextChar:
+.fa37	20 f7 fe	jsr $fef7		jsr  WriteAndBumpAddress
+.fa3a					MONEnterText:
+.fa3a	20 8d fe	jsr $fe8d		jsr  GetNew 								; get char
+.fa3d	c9 27		cmp #$27		cmp  #$27 									; done ?
+.fa3f	d0 05		bne $fa46		bne  MONOkChar
+.fa41	20 e3 fb	jsr $fbe3		jsr  PrintComma 							; if so, print comma and back to data mode
+.fa44	d0 cd		bne $fa13		bne  MONGotoDataMode
+.fa46					MONOkChar:
+.fa46	c9 0d		cmp #$0d		cmp  #$D 									; CR exits too.
+.fa48	f0 e4		beq $fa2e		beq  MonitorDataModeLoop
+.fa4a	d0 eb		bne $fa37		bne  MONNextChar
+.fa4c					MONInterruptBreakVector:
+.fa4c	4c 4f fa	jmp $fa4f		jmp  MONInterruptBreak
+.fa4f					MONInterruptBreak:
+.fa4f	85 e0		sta $e0			sta  BrkA 									; save A
+.fa51	68		pla			pla   										; restore/save P
+.fa52	48		pha			pha
+.fa53	29 10		and #$10		and  #$10 									; is it a break
+.fa55	d0 03		bne $fa5a		bne  MONInterruptBreakSave
+.fa57	a5 e0		lda $e0			lda  BrkA	 								; if not restore and return.
+.fa59	40		rti			rti
+.fa5a					MONInterruptBreakSave:
+.fa5a	86 e1		stx $e1			stx  BrkX 									; save XY (A alredy done)
+.fa5c	84 e2		sty $e2			sty  BrkY
+.fa5e	68		pla			pla
+.fa5f	85 e3		sta $e3			sta  BrkP 									; save P
+.fa61	d8		cld			cld
+.fa62	38		sec			sec  										; save PC
+.fa63	68		pla			pla
+.fa64	e9 02		sbc #$02		sbc  #2
+.fa66	85 e5		sta $e5			sta  CopyTarget+1
+.fa68	68		pla			pla
+.fa69	e9 00		sbc #$00		sbc  #0
+.fa6b	85 e6		sta $e6			sta  BrkPCH
+.fa6d	ba		tsx			tsx
+.fa6e	86 e4		stx $e4			stx  CopyTarget                      		; save S
+.fa70	a0 00		ldy #$00		ldy  #0 									; put breakpoint opcode back
+.fa72	a5 e7		lda $e7			lda  OldOpcode
+.fa74	91 e5		sta ($e5),y		sta  (CopyTarget+1),Y 						; +1 because of RTS thing.
+.fa76	a9 e0		lda #$e0		lda  #BrkA 									; and go round again.
+.fa78	85 fe		sta $fe			sta  FromAddress
+.fa7a	84 ff		sty $ff			sty  $FF
+.fa7c	d0 b0		bne $fa2e		bne  MonitorDataModeLoop
+.fa7e					SaveMachineCode:
+.fa7e	20 bd ff	jsr $ffbd		jsr  Collect3Addr 							; get 3 addresses first, last, restart
+.fa81	20 f7 ff	jsr $fff7		jsr  SetSaveMode 							; save
+.fa84	20 e9 fe	jsr $fee9		jsr  GetCharKbdAcia							; wait for return.
+.fa87	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.fa8a	20 e3 ff	jsr $ffe3		jsr  PrintCurrentAddr						; print start
+.fa8d	a9 2f		lda #$2f		lda  #'/' 									; data mode.
+.fa8f	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.fa92	d0 03		bne $fa97		bne  SAVOutput
+.fa94					SAVOutBytes:
+.fa94	20 f9 fe	jsr $fef9		jsr  BumpAddress
+.fa97					SAVOutput:
+.fa97	20 f0 fe	jsr $fef0		jsr  PrintByteAtFE 							; output byte anD CR to advance
+.fa9a	a9 0d		lda #$0d		lda  #$D
+.fa9c	20 b1 fc	jsr $fcb1		jsr  WriteACIA-Offset
+.fa9f	20 eb fb	jsr $fbeb		jsr  CheckEnd
+.faa2	90 f0		bcc $fa94		bcc  SAVOutBytes 							; keep going until finished.
+.faa4	a5 e4		lda $e4			lda  CopyTarget 							; copy exec address
+.faa6	a6 e5		ldx $e5			ldx  CopyTarget+1
+.faa8	85 fe		sta $fe			sta  FromAddress
+.faaa	86 ff		stx $ff			stx  FromAddress+1
+.faac	20 e3 ff	jsr $ffe3		jsr  PrintCurrentAddr 						; write that out
+.faaf	a9 47		lda #$47		lda  #'G' 									; G to execute it
+.fab1	20 ee ff	jsr $ffee		jsr  OutputCharacter 						; NULLs to ACIA
+.fab4	20 ac ff	jsr $ffac		jsr  TenNulls
+.fab7	8c 05 02	sty $0205		sty  ACIASaveFlag 							; keyboard mode.
+.faba	4c 7e f9	jmp $f97e		jmp  MonitorCmdAddrMode
+.fabd					ScreenEditorEntry:
+.fabd	8a		txa			txa  										; save X & Y
+.fabe	48		pha			pha
+.fabf	98		tya			tya
+.fac0	48		pha			pha
+.fac1	ad 04 02	lda $0204		lda  EditFlag								; are we in edit mode.
+.fac4	10 59		bpl $fb1f		bpl  StandardHandler
+.fac6					ScreenEditMode:
+.fac6	ac 2f 02	ldy $022f		ldy  EditCursorDisp 						; position in line.
+.fac9	ad 31 02	lda $0231		lda  EditCursorLine 						; copy current line to E4/E5
+.facc	85 e4		sta $e4			sta  CopyTarget
+.face	ad 32 02	lda $0232		lda  EditCursorLine+1
+.fad1	85 e5		sta $e5			sta  CopyTarget+1
+.fad3	b1 e4		lda ($e4),y		lda  (CopyTarget),Y 						; read character on that line
+.fad5	8d 30 02	sta $0230		sta  EditCursorChar 						; save as the character there.
+.fad8	a9 a1		lda #$a1		lda  #$A1 									; write out solid block cursor character
+.fada	91 e4		sta ($e4),y		sta  (CopyTarget),Y
+.fadc	20 00 fd	jsr $fd00		jsr  ReadKeyboard 							; read the keyboard
+.fadf	ad 30 02	lda $0230		lda  EditCursorChar 						; put the character back.
+.fae2	91 e4		sta ($e4),y		sta  (CopyTarget),Y
+.fae4	ad 15 02	lda $0215		lda  FinalKey 								; get the keystroke.
+.fae7	c9 11		cmp #$11	 	cmp  #$11  									; ctl-q =copy character to buffer
+.fae9	f0 28		beq $fb13		beq  SECopyCharacter
+.faeb	c9 02		cmp #$02	 	cmp  #2  									; ctl-b = backward
+.faed	f0 1e		beq $fb0d		beq  SEBackward
+.faef	c9 06		cmp #$06	 	cmp  #$6  									; ctl-f = forward
+.faf1	f0 14		beq $fb07		beq  SEForward
+.faf3	c9 10		cmp #$10	 	cmp  #$10  									; ctl-p = previous
+.faf5	f0 0a		beq $fb01		beq  SEPreviousLine
+.faf7	c9 0e		cmp #$0e		cmp  #$E                                    ; ctl-n (next line)
+.faf9	d0 27		bne $fb22		bne  StandardProcessor
+.fafb	20 7c fb	jsr $fb7c		jsr  MoveDown
+.fafe	4c c6 fa	jmp $fac6		jmp  ScreenEditMode
+.fb01					SEPreviousLine:
+.fb01	20 28 fe	jsr $fe28		jsr  MoveUp
+.fb04	4c c6 fa	jmp $fac6		jmp  ScreenEditMode
+.fb07					SEForward:
+.fb07	20 6b fb	jsr $fb6b		jsr  MoveRight
+.fb0a	4c c6 fa	jmp $fac6		jmp  ScreenEditMode
+.fb0d					SEBackward:
+.fb0d	20 19 fe	jsr $fe19		jsr  MoveLeft
+.fb10	4c c6 fa	jmp $fac6		jmp  ScreenEditMode
+.fb13					SECopyCharacter:
+.fb13	ad 30 02	lda $0230		lda  EditCursorChar 						; copy character at cursor to key pressed
+.fb16	8d 15 02	sta $0215		sta  FinalKey
+.fb19	20 6b fb	jsr $fb6b		jsr  MoveRight 								; and move right.
+.fb1c	4c 43 fb	jmp $fb43		jmp  ExitKeyboardHandler 					; exit as if that is pressed.
+.fb1f					StandardHandler:
+.fb1f	20 00 fd	jsr $fd00		jsr  ReadKeyboard 							; read keyboard the usual way.
+.fb22					StandardProcessor:
+.fb22	c9 05		cmp #$05		cmp  #5 									; Ctrl+E ?
+.fb24	d0 1d		bne $fb43		bne  ExitKeyboardHandler 					; no exit the keyboard handler
+.fb26	ad 04 02	lda $0204		lda  EditFlag								; toggle the edit flag.
+.fb29	49 ff		eor #$ff		eor  #$FF
+.fb2b	8d 04 02	sta $0204		sta  EditFlag
+.fb2e	10 ef		bpl $fb1f		bpl  StandardHandler 						; if zero, now on standard handler.
+.fb30	ad 2b 02	lda $022b		lda  CharPosition 							; restore cursor position back ?
+.fb33	8d 31 02	sta $0231		sta  EditCursorLine
+.fb36	ad 2c 02	lda $022c		lda  CharPosition+1
+.fb39	8d 32 02	sta $0232		sta  EditCursorLine+1
+.fb3c	a2 00		ldx #$00		ldx  #0
+.fb3e	8e 2f 02	stx $022f		stx  EditCursorDisp
+.fb41	f0 83		beq $fac6		beq  ScreenEditMode
+.fb43					ExitKeyboardHandler:
+.fb43	4c d3 fd	jmp $fdd3		jmp  RKExitPopYX
+.fb46					VectoredInput:
+.fb46	2c 03 02	bit $0203		bit  ACIALoadFlag 							; check coming fom ACIA
+.fb49	10 1d		bpl $fb68		bpl  EnterScreenEditor                      ; no, go to ScreenEditorEntry
+.fb4b					CheckExitLoad:
+.fb4b	a9 02		lda #$02		lda  #2 									; read row 2
+.fb4d	20 be fc	jsr $fcbe		jsr  WriteKeyboardRowA
+.fb50	20 cf fc	jsr $fccf		jsr  ReadKeyboardColA
+.fb53	29 10		and #$10		and  #$10 									; bit 4, if set space is pressed
+.fb55	d0 0a		bne $fb61		bne  ACIASpaceBreak                         ; space key pressed so interrupt
+.fb57					ReadACIA:
+.fb57	ad 00 f0	lda $f000		lda  Acia 									; read ACIA control
+.fb5a	4a		lsr a			lsr  A 										; check recieve data reg full (bit 0)
+.fb5b	90 ee		bcc $fb4b		bcc  CheckExitLoad 							; nope ; check space and go round again.
+.fb5d	ad 01 f0	lda $f001		lda  Acia+1 								; get character.
+.fb60	60		rts			rts
+.fb61					ACIASpaceBreak:
+.fb61	a9 00		lda #$00		lda  #0 									; reset two sources
+.fb63	85 fb		sta $fb			sta  InputFromSerial
+.fb65	8d 03 02	sta $0203		sta  ACIALoadFlag
+.fb68					EnterScreenEditor:
+.fb68	4c bd fa	jmp $fabd		jmp  ScreenEditorEntry
+.fb6b					MoveRight:
+.fb6b	ae 22 02	ldx $0222		ldx  LastCharOnLine 						; reached end of line ?
+.fb6e	ec 2f 02	cpx $022f		cpx  EditCursorDisp
+.fb71	f0 04		beq $fb77		beq  NextLineDown 							; yes, next line down.
+.fb73	ee 2f 02	inc $022f		inc  EditCursorDisp 						; no, one right.
+.fb76	60		rts			rts
+.fb77					NextLineDown:
+.fb77	a2 00		ldx #$00		ldx  #0 									; start of next line.
+.fb79	8e 2f 02	stx $022f		stx  EditCursorDisp
+.fb7c					MoveDown:
+.fb7c	18		clc			clc   										; advance current line to next down
+.fb7d	ad 31 02	lda $0231		lda  EditCursorLine
+.fb80	69 20		adc #$20		adc  #LineWidth
+.fb82	8d 31 02	sta $0231		sta  EditCursorLine
+.fb85	ad 32 02	lda $0232		lda  EditCursorLine+1
+.fb88	69 00		adc #$00		adc  #0
+.fb8a	c9 d4		cmp #$d4		cmp  #>ScreenMemoryEnd                      ; wrap round
+.fb8c	d0 02		bne $fb90		bne  DontWrap
+.fb8e	a9 d0		lda #$d0		lda  #>Screen
+.fb90					DontWrap:
+.fb90	8d 32 02	sta $0232		sta  EditCursorLine+1
+.fb93					Exit2:
+.fb93	60		rts			rts
+.fb94					ControlCCheck:
+.fb94	ad 12 02	lda $0212		lda  BreakDisabled
+.fb97	d0 fa		bne $fb93		bne  Exit2                                  ; disable flag set
+.fb99	a9 01		lda #$01		lda  #1
+.fb9b	20 be fc	jsr $fcbe		jsr  WriteKeyboardRowA
+.fb9e	2c 00 df	bit $df00		bit  Keyboard
+.fba1	70 f0		bvs $fb93		bvs  Exit2                                  ; bvc for non-invert keyboard
+.fba3	a9 04		lda #$04		lda  #4
+.fba5	20 be fc	jsr $fcbe		jsr  WriteKeyboardRowA
+.fba8	2c 00 df	bit $df00		bit  Keyboard
+.fbab	70 e6		bvs $fb93		bvs  Exit2                                  ; bvc for non-invert keyboard
+.fbad	a9 03		lda #$03		lda  #3                                     ; ctrl-c pressed
+.fbaf	4c 36 a6	jmp $a636		jmp  BASIC_ControlC							; this is a BASIC routine.
+.fbb2					DefaultSettings:
+>fbb2	46 fb					.word VectoredInput                         ; 218 input
+>fbb4	9b ff					.word VectoredOutput                        ; 21a output
+>fbb6	94 fb					.word ControlCCheck                         ; 21c ctrl-c
+>fbb8	70 fe					.word VectorSetLoad                         ; 21e load
+>fbba	7b fe					.word VectorSetSave                         ; 220 save
+>fbbc	17					.byte LineLengthMinus1                      ; 222 length of line - 1
+>fbbd	85 d0					.word ScreenVisibleTop                      ; 223 top of screen
+>fbbf	65 d3					.word ScreenVisibleBottom                   ; 225 bottom of screen
+.fbc1	bd 85 d0	lda $d085,x		lda  ScreenVisibleTop,X                     ; 227 code to copy to from/screen, stops flash?
+.fbc4	9d 85 d0	sta $d085,x		sta  ScreenVisibleTop,X                     ; 22a
+.fbc7	ca		dex			dex  ; 22                                   ; 22d
+.fbc8	60		rts			rts  ; 22                                   ; 22e
+>fbc9	00					.byte $00                                   ; 22f
+>fbca	20					.byte $20                                   ; 230
+>fbcb	85 d0					.word ScreenVisibleTop                      ; 231
+>fbcd	88 f9					.word MONGetCommand                                 ; 233
+.fbcf					CheckScreenBottomXLast:
+.fbcf	ae 22 02	ldx $0222		ldx  LastCharOnLine
+.fbd2					CheckScreenBottom:
+.fbd2	38		sec			sec
+.fbd3	ad 2b 02	lda $022b		lda  CharPosition
+.fbd6	f9 23 02	sbc $0223,y		sbc  FirstScreenChar,Y
+.fbd9	ad 2c 02	lda $022c		lda  CharPosition+1
+.fbdc	f9 24 02	sbc $0224,y		sbc  FirstScreenChar+1,Y
+.fbdf	60		rts			rts
+.fbe0					PrintGreater:
+.fbe0	a9 3e		lda #$3e		lda  #'>'
+>fbe2	2c					.byte $2C 									; the skip trick, again.
+.fbe3					PrintComma:
+.fbe3	a9 2c		lda #$2c		lda  #','
+>fbe5	2c					.byte $2C
+.fbe6					PrintSpace:
+.fbe6	a9 20		lda #$20		lda  #' '
+.fbe8	4c ee ff	jmp $ffee		jmp  OutputCharacter
+.fbeb					CheckEnd:
+.fbeb	38		sec			sec   										; returns CS if from >= to
+.fbec	a5 fe		lda $fe			lda  FromAddress
+.fbee	e5 f9		sbc $f9			sbc  ToAddress
+.fbf0	a5 ff		lda $ff			lda  FromAddress+1
+.fbf2	e5 fa		sbc $fa			sbc  ToAddress+1
+.fbf4	60		rts			rts
+.fbf5					PrintCRLF:
+.fbf5	a9 0d		lda #$0d		lda  #13 									; print CR
+.fbf7	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.fbfa	a9 0a		lda #$0a		lda  #10 									; print LF
+.fbfc	4c ee ff	jmp $ffee		jmp  OutputCharacter
+>fbff	40					.byte $40
+.fc00					BootstrapDisk:
+.fc00	20 0c fc	jsr $fc0c		jsr  BootstrapFDD-Offset 					; call the bootstrap code
+.fc03	6c fd 00	jmp ($00fd)		jmp  (FDDBootstrap) 						; and do whatever.
+.fc06	20 0c fc	jsr $fc0c		jsr  BootstrapFDD-Offset 					; unused code doing it from monitor ?
+.fc09	4c 00 fe	jmp $fe00		jmp  MonitorColdStart
+.fc0c					BootstrapFDD:
+.fc0c	a0 00		ldy #$00		ldy  #0										; zero PIA ; think disable pull ups.
+.fc0e	8c 01 c0	sty $c001		sty  DiskController+1
+.fc11	8c 00 c0	sty $c000		sty  DiskController
+.fc14	a2 04		ldx #$04		ldx  #4
+.fc16	8e 01 c0	stx $c001		stx  DiskController+1 						; pull up on fault ?
+.fc19	8c 03 c0	sty $c003		sty  DiskController+3 						; make control register all output.
+.fc1c	88		dey			dey
+.fc1d	8c 02 c0	sty $c002		sty  DiskController+2 						; set all bits to 1 on the control register
+.fc20	8e 03 c0	stx $c003		stx  DiskController+3						; all outs ?
+.fc23	8c 02 c0	sty $c002		sty  DiskController+2 						; all bits to 1 ?
+.fc26	a9 fb		lda #$fb		lda  #$FB 									; Head, bit 2 clear, pushing to track 0.
+.fc28	d0 09		bne $fc33		bne  FDDProcessCommand
+.fc2a					FDDDriveForward:
+.fc2a	a9 02		lda #$02		lda  #2 									; at track 0 ?
+.fc2c	2c 00 c0	bit $c000		bit  DiskController
+.fc2f	f0 1c		beq $fc4d		beq  FDDTrack0
+.fc31	a9 ff		lda #$ff		lda  #$FF
+.fc33					FDDProcessCommand:
+.fc33	8d 02 c0	sta $c002		sta  DiskController+2
+.fc36	20 a5 fc	jsr $fca5		jsr  FDDExit-Offset
+.fc39	29 f7		and #$f7		and  #$F7 									; Enable write, erase, step to 76
+.fc3b	8d 02 c0	sta $c002		sta  DiskController+2
+.fc3e	20 a5 fc	jsr $fca5		jsr  FDDExit-Offset
+.fc41	09 08		ora #$08		ora  #8 									; 0-1 transition starts stepping ?
+.fc43	8d 02 c0	sta $c002		sta  DiskController+2 						; bit inverted.
+.fc46	a2 18		ldx #$18		ldx  #$18 									; waut for it...
+.fc48	20 91 fc	jsr $fc91		jsr  FDDDriveDelay-Offset
+.fc4b	f0 dd		beq $fc2a		beq  FDDDriveForward 						; always called.
+.fc4d					FDDTrack0:
+.fc4d	a2 7f		ldx #$7f		ldx  #$7F 									; head load.
+.fc4f	8e 02 c0	stx $c002		stx  DiskController+2
+.fc52	20 91 fc	jsr $fc91		jsr  FDDDriveDelay-Offset 					; wait for head to load.
+.fc55					FDDWaitIndex:
+.fc55	ad 00 c0	lda $c000		lda  DiskController 						; wait until at the index
+.fc58	30 fb		bmi $fc55		bmi  FDDWaitIndex
+.fc5a					FDDWaitNotIndex:
+.fc5a	ad 00 c0	lda $c000		lda  DiskController 						; now wait until off index.
+.fc5d	10 fb		bpl $fc5a		bpl  FDDWaitNotIndex
+.fc5f	a9 03		lda #$03		lda  #3										; set ACIA master reset
+.fc61	8d 10 c0	sta $c010		sta  DiskController+$10
+.fc64	a9 58		lda #$58		lda  #$58									; RTS high, no interrupt, 8E1 and no divider.
+.fc66	8d 10 c0	sta $c010		sta  DiskController+$10
+.fc69	20 9c fc	jsr $fc9c		jsr  FDDReadCharacter-Offset				; read bootstrap.
+.fc6c	85 fe		sta $fe			sta  FDDBootstrap+1
+.fc6e	aa		tax			tax
+.fc6f	20 9c fc	jsr $fc9c		jsr  FDDReadCharacter-Offset
+.fc72	85 fd		sta $fd			sta  FDDBootstrap
+.fc74	20 9c fc	jsr $fc9c		jsr  FDDReadCharacter-Offset 				; read count of 1/4k pages
+.fc77	85 ff		sta $ff			sta  FDDBootstrap+2
+.fc79	a0 00		ldy #$00		ldy  #0 									; now read in the index track.
+.fc7b					FDDReadBootstrap:
+.fc7b	20 9c fc	jsr $fc9c		jsr  FDDReadCharacter-Offset 				; read character
+.fc7e	91 fd		sta ($fd),y		sta  (FDDBootstrap),Y 						; store at bootstrap
+.fc80	c8		iny			iny
+.fc81	d0 f8		bne $fc7b		bne  FDDReadBootstrap 						; read in 1/4k page.
+.fc83	e6 fe		inc $fe			inc  FDDBootstrap+1 						; next page
+.fc85	c6 ff		dec $ff			dec  FDDBootstrap+2 						; done all of them.
+.fc87	d0 f2		bne $fc7b		bne  FDDReadBootstrap
+.fc89	86 fe		stx $fe			stx  FromAddress 							; reset page
+.fc8b	a9 ff		lda #$ff		lda  #$FF 									; sleep controller.
+.fc8d	8d 02 c0	sta $c002		sta  DiskController+2
+.fc90	60		rts			rts
+.fc91					FDDDriveDelay:
+.fc91	a0 f8		ldy #$f8		ldy  #$F8 									; short delay to allow read in
+.fc93					FDDIMWait:
+.fc93	88		dey			dey
+.fc94	d0 fd		bne $fc93		bne  FDDIMWait
+.fc96	55 ff		eor $ff,x		eor  $FF,X 									; just padding.
+.fc98	ca		dex			dex
+.fc99	d0 f6		bne $fc91		bne  FDDDriveDelay 							; do for the lot.
+.fc9b	60		rts			rts
+.fc9c					FDDReadCharacter:
+.fc9c	ad 10 c0	lda $c010		lda  DiskController+$10 					; ACIA at $10, so wait for data available
+.fc9f	4a		lsr a			lsr  A
+.fca0	90 fa		bcc $fc9c		bcc  FDDReadCharacter
+.fca2	ad 11 c0	lda $c011		lda  DiskController+$11 					; then read it.
+.fca5					FDDExit:
+.fca5	60		rts			rts
+.fca6					ResetACIA:
+.fca6	a9 03		lda #$03		lda  #3                                     ; reset acia
+.fca8	8d 00 f0	sta $f000		sta  Acia
+.fcab	a9 b1		lda #$b1		lda  #$B1                                   ; /16, 8bits, 2stop, rts low, irq on recv.
+.fcad	8d 00 f0	sta $f000		sta  Acia
+.fcb0	60		rts			rts
+.fcb1					WriteACIA:
+.fcb1	48		pha			pha   										; save to write.
+.fcb2					WaitTDRE:
+.fcb2	ad 00 f0	lda $f000		lda  Acia 									; get bit 1, which is transmit data empty
+.fcb5	4a		lsr a			lsr  A
+.fcb6	4a		lsr a			lsr  A
+.fcb7	90 f9		bcc $fcb2		bcc  WaitTDRE
+.fcb9	68		pla			pla   										; restore and write the byte to send.
+.fcba	8d 01 f0	sta $f001		sta  Acia+1
+.fcbd	60		rts			rts
+.fcbe					WriteKeyboardRowA:
+.fcbe	49 ff		eor #$ff		eor  #$FF 									; C1 upwards are non inverted
+.fcc0	8d 00 df	sta $df00		sta  Keyboard
+.fcc3	49 ff		eor #$ff		eor  #$FF
+.fcc5	60		rts			rts
+.fcc6					ReadKeyboardColX:
+.fcc6	48		pha			pha  										; save A
+.fcc7	20 cf fc	jsr $fccf		jsr  ReadKeyboardColA-Offset 				; read keyboard into A
+.fcca	aa		tax			tax   										; to X
+.fccb	68		pla			pla  										; restore A
+.fccc	ca		dex			dex   										; set Z flag for new value
+.fccd	e8		inx			inx
+.fcce	60		rts			rts
+.fccf					ReadKeyboardColA:
+.fccf	ad 00 df	lda $df00		lda  Keyboard
+.fcd2	49 ff		eor #$ff		eor  #$FF 									; C1 upwards are non inverted.
+.fcd4	60		rts			rts
+.fcd5					UK101Rubout:
+.fcd5	c9 5f		cmp #$5f		cmp  #$5F                                   ; rubout
+.fcd7	f0 03		beq $fcdc		beq  GoUK101Rubout
+.fcd9	4c 74 a3	jmp $a374		jmp  UK101_Rubout1
+.fcdc					GoUK101Rubout:
+.fcdc	4c 4b a3	jmp $a34b		jmp  UK101_Rubout2
+.fcdf					KDelay:
+.fcdf	a0 10		ldy #$10		ldy  #$10
+.fce1					Delay2:
+.fce1	a2 40		ldx #$40		ldx  #$40
+.fce3					DelayLoop:
+.fce3	ca		dex			dex
+.fce4	d0 fd		bne $fce3		bne  DelayLoop
+.fce6	88		dey			dey
+.fce7	d0 f8		bne $fce1		bne  Delay2
+.fce9	60		rts			rts
+.fcea					BootText:
+>fcea	43 45 47 4d 4f 4e 28 43			.text 'CEGMON(C)1980 D/C/W/M?'
+>fcf2	29 31 39 38 30 20 44 2f 43 2f 57 2f 4d 3f
+.fd00					BootTextEnd:
+.fd00					ReadKeyboard:
+.fd00	8a		txa			txa   										; save X & Y on the stack.
+.fd01	48		pha			pha
+.fd02	98		tya			tya
+.fd03	48		pha			pha
+.fd04					RKNewScan:
+.fd04	a9 80		lda #$80		lda  #$80                                   ; on row 7
+.fd06					RKNextRow:
+.fd06	20 be fc	jsr $fcbe		jsr  WriteKeyboardRowA                      ; set row using the routines provided.
+.fd09	20 c6 fc	jsr $fcc6		jsr  ReadKeyboardColX                       ; read column, normalised to bit set on ress
+.fd0c	d0 05		bne $fd13		bne  RKKeyPressed                           ; key pressed, go handle it.
+.fd0e	4a		lsr a			lsr  a                                      ; next row, goes to zero when done all
+.fd0f	d0 f5		bne $fd06		bne  RKNextRow 								; done all scans.
+.fd11	f0 27		beq $fd3a		beq  RKNoKeyPressed 						; nothing pressed this scan
+.fd13					RKKeyPressed:
+.fd13	4a		lsr a			lsr  a 										; is it row $01 being tested (RPT/CTL/ESC etc.)
+.fd14	90 09		bcc $fd1f		bcc  RKNotRow1
+.fd16	8a		txa			txa   										; get the column bits.
+.fd17	29 20		and #$20		and  #$20 									; this is C5, e.g. the ESC key
+.fd19	f0 1f		beq $fd3a		beq  RKNoKeyPressed
+.fd1b	a9 1b		lda #$1b		lda  #$1B 									; if pressed, return $1B (27) Escape
+.fd1d	d0 31		bne $fd50		bne  RKCheckKey 							; do the repeat checks.
+.fd1f					RKNotRow1:
+.fd1f	20 86 fe	jsr $fe86		jsr  BitToNumber 							; convert row >> 1 to number in Y.
+.fd22	98		tya			tya   										; save in FinalKey
+.fd23	8d 15 02	sta $0215		sta  FinalKey
+.fd26	0a		asl a			asl  A 										; *8
+.fd27	0a		asl a			asl  A
+.fd28	0a		asl a			asl  A
+.fd29	38		sec			sec   										; *7 (there is no entry for C0 in the table)
+.fd2a	ed 15 02	sbc $0215		sbc  FinalKey
+.fd2d	8d 15 02	sta $0215		sta  FinalKey 								; so now (row-1)* 7 here.
+.fd30	8a		txa			txa  										; this is the read column value.
+.fd31	4a		lsr a			lsr  A 										; clear bit 0 (shift lock)
+.fd32	0a		asl a			asl  A
+.fd33	20 86 fe	jsr $fe86		jsr  BitToNumber 							; convert that to a number, in Y
+.fd36	f0 0f		beq $fd47		beq  RKContinue 							; if shift is zero, only one key pressed.
+.fd38	a9 00		lda #$00		lda  #0 									; multiple keys, zero the last character
+.fd3a					RKNoKeyPressed:
+.fd3a	8d 16 02	sta $0216		sta  LastChar 								; clear the last character.
+.fd3d					RKStartRepeat:
+.fd3d	8d 13 02	sta $0213		sta  CurrentKeyIndex						; save as current key
+.fd40	a9 02		lda #$02		lda  #2 									; reset the repeat count to check debounce
+.fd42	8d 14 02	sta $0214		sta  AutoRepeatCount
+.fd45	d0 bd		bne $fd04		bne  RKNewScan 								; and try again
+.fd47					RKContinue:
+.fd47	18		clc			clc   										; add column to (row - 1) *7
+.fd48	98		tya			tya
+.fd49	6d 15 02	adc $0215		adc  FinalKey
+.fd4c	a8		tay			tay   										; and use this to get the actual ASCII code.
+.fd4d	b9 3b ff	lda $ff3b,y		lda  KeyboardCharTable-1,Y
+.fd50					RKCheckKey:
+.fd50	cd 13 02	cmp $0213		cmp  CurrentKeyIndex 						; same as current
+.fd53	d0 e8		bne $fd3d		bne  RKStartRepeat	 						; start auto repeat
+.fd55	ce 14 02	dec $0214		dec  AutoRepeatCount 						; check done enough repeats
+.fd58	f0 05		beq $fd5f		beq  RKRegisterPress 						; if so, then repeat it.
+.fd5a	20 df fc	jsr $fcdf		jsr  KDelay-Offset 							; otherwise delay and rescan
+.fd5d	f0 a5		beq $fd04		beq  RKNewScan
+.fd5f					RKRegisterPress:
+.fd5f	a2 64		ldx #$64		ldx  #$64 									; 100 decimal
+.fd61	cd 16 02	cmp $0216		cmp  LastChar 								; if same as last character
+.fd64	d0 02		bne $fd68		bne  RKNotFirst
+.fd66	a2 0f		ldx #$0f		ldx  #$F 									; if its a repeat, repeat much quicker next time.
+.fd68					RKNotFirst:
+.fd68	8e 14 02	stx $0214		stx  AutoRepeatCount 						; set the count and character.
+.fd6b	8d 16 02	sta $0216		sta  LastChar
+.fd6e	c9 21		cmp #$21		cmp  #$21 									; if <= space
+.fd70	30 5e		bmi $fdd0		bmi  RKExit
+.fd72	c9 5f		cmp #$5f		cmp  #$5F 									; or lower case and up exit now.
+.fd74	f0 5a		beq $fdd0		beq  RKExit
+.fd76	a9 01		lda #$01		lda  #1 									; read row 1, the control keys row.
+.fd78	20 be fc	jsr $fcbe		jsr  WriteKeyboardRowA
+.fd7b	20 cf fc	jsr $fccf		jsr  ReadKeyboardColA
+.fd7e	8d 15 02	sta $0215		sta  FinalKey 								; save it.
+.fd81	29 01		and #$01		and  #1 									; shift lock bit to X.
+.fd83	aa		tax			tax
+.fd84	ad 15 02	lda $0215		lda  FinalKey 								; left shift/right shift
+.fd87	29 06		and #$06		and  #6
+.fd89	d0 17		bne $fda2		bne  RKShift 								; if non zero, then shift.
+.fd8b	2c 13 02	bit $0213		bit  CurrentKeyIndex						; if < 64 then no effect ?
+.fd8e	50 2b		bvc $fdbb		bvc  RKDoModifier
+.fd90	8a		txa			txa  										; get shift lock
+.fd91	49 01		eor #$01		eor  #1 									; toggle it
+.fd93	29 01		and #$01		and  #1 									; mask it.
+.fd95	f0 24		beq $fdbb		beq  RKDoModifier
+.fd97	a9 20		lda #$20		lda  #$20 									; to lower case modifier
+.fd99	2c 15 02	bit $0215		bit  FinalKey 								; if bit 5 is set.
+.fd9c	50 25		bvc $fdc3		bvc  RKApplyModifier 						; apply that
+.fd9e	a9 c0		lda #$c0		lda  #$C0 	 								; otherwise apply -64 modifier.
+.fda0	d0 21		bne $fdc3		bne  RKApplyModifier
+.fda2					RKShift:
+.fda2	2c 13 02	bit $0213		bit  CurrentKeyIndex 						; if < 64
+.fda5	50 03		bvc $fdaa		bvc  RKNormalShift
+.fda7	8a		txa			txa   										; skip if shift lock not pressed.
+.fda8	f0 11		beq $fdbb		beq  RKDoModifier
+.fdaa					RKNormalShift:
+.fdaa	ac 13 02	ldy $0213		ldy  CurrentKeyIndex  						; get current key
+.fdad	c0 31		cpy #$31		cpy  #$31 									; outside range $31-$3C
+.fdaf	90 08		bcc $fdb9		bcc  RKModifier16 							; apply +$10 modifier
+.fdb1	c0 3c		cpy #$3c		cpy  #$3C
+.fdb3	b0 04		bcs $fdb9		bcs  RKModifier16
+.fdb5	a9 f0		lda #$f0		lda  #$F0 									; apply -$10
+.fdb7	d0 02		bne $fdbb		bne  RKDoModifier
+.fdb9					RKModifier16:
+.fdb9	a9 10		lda #$10		lda  #$10
+.fdbb					RKDoModifier:
+.fdbb	2c 15 02	bit $0215		bit  FinalKey 								; if >$40
+.fdbe	50 03		bvc $fdc3		bvc  RKApplyModifier
+.fdc0	18		clc			clc   										; preapply this/
+.fdc1	69 c0		adc #$c0		adc  #$C0
+.fdc3					RKApplyModifier:
+.fdc3	18		clc			clc   										; add to current key
+.fdc4	6d 13 02	adc $0213		adc  CurrentKeyIndex
+.fdc7	29 7f		and #$7f		and  #$7F 									; make 7 bit
+.fdc9	2c 15 02	bit $0215		bit  FinalKey								; set bit 7 from original.
+.fdcc	10 02		bpl $fdd0		bpl  RKExit
+.fdce	09 80		ora #$80		ora  #$80
+.fdd0					RKExit:
+.fdd0	8d 15 02	sta $0215		sta  FinalKey								; save as key.
+.fdd3					RKExitPopYX:
+.fdd3	68		pla			pla  										; restore YX, load final key and exit
+.fdd4	a8		tay			tay
+.fdd5	68		pla			pla
+.fdd6	aa		tax			tax
+.fdd7	ad 15 02	lda $0215		lda  FinalKey
+.fdda	60		rts			rts
+.fddb					CopyLoop:
+.fddb	20 f9 fe	jsr $fef9		jsr  BumpAddress
+.fdde	e6 e4		inc $e4			inc  CopyTarget
+.fde0	d0 02		bne $fde4		bne  CopyBlock
+.fde2	e6 e5		inc $e5			inc  CopyTarget+1
+.fde4					CopyBlock:
+.fde4	b1 fe		lda ($fe),y		lda  (FromAddress),Y
+.fde6	91 e4		sta ($e4),y		sta  (CopyTarget),Y
+.fde8	20 eb fb	jsr $fbeb		jsr  CheckEnd
+.fdeb	90 ee		bcc $fddb		bcc  CopyLoop
+.fded	60		rts			rts
+.fdee					DownOneLine:
+.fdee	18		clc			clc
+.fdef	a9 20		lda #$20		lda  #LineWidth
+.fdf1	7d 28 02	adc $0228,x		adc  CharSrcPos,X
+.fdf4	9d 28 02	sta $0228,x		sta  CharSrcPos,X
+.fdf7	a9 00		lda #$00		lda  #0
+.fdf9	7d 29 02	adc $0229,x		adc  CharSrcPos+1,X
+.fdfc	9d 29 02	sta $0229,x		sta  CharSrcPos+1,X
+.fdff	60		rts			rts
+.fe00					MonitorColdStart:
+.fe00	a2 28		ldx #$28		ldx  #$28 									; reset stack and flags
+.fe02	9a		txs			txs
+.fe03	d8		cld			cld
+.fe04	20 a6 fc	jsr $fca6		jsr  ResetACIA-Offset 						; reset ACIA
+.fe07	20 40 fe	jsr $fe40		jsr  ResetVectorDataArea 					; reset Vectors
+.fe0a	ea		nop			nop
+.fe0b	ea		nop			nop
+.fe0c					MonitorWarmStart:
+.fe0c	20 59 fe	jsr $fe59		jsr  ClearScreen 							; clear screen
+.fe0f	8d 01 02	sta $0201		sta  OldCharacter 							; no old character, from address
+.fe12	84 fe		sty $fe			sty  FromAddress 							; zero from address
+.fe14	84 ff		sty $ff			sty  FromAddress+1
+.fe16	4c 7e f9	jmp $f97e		jmp  MonitorCmdAddrMode 					; go into command mode.
+.fe19					MoveLeft:
+.fe19	ae 2f 02	ldx $022f		ldx  EditCursorDisp 						; check if we can move left.
+.fe1c	f0 04		beq $fe22		beq  MoveUp2 								; no, end of previous line.
+.fe1e	ce 2f 02	dec $022f		dec  EditCursorDisp							; yes, left one.
+.fe21	60		rts			rts
+.fe22					MoveUp2:
+.fe22	ae 22 02	ldx $0222		ldx  LastCharOnLine 						; set offset in line.
+.fe25	8e 2f 02	stx $022f		stx  EditCursorDisp
+.fe28					MoveUp:
+.fe28	38		sec			sec   										; go up one line
+.fe29	ad 31 02	lda $0231		lda  EditCursorLine
+.fe2c	e9 20		sbc #$20		sbc  #LineWidth
+.fe2e	8d 31 02	sta $0231		sta  EditCursorLine
+.fe31	ad 32 02	lda $0232		lda  EditCursorLine+1
+.fe34	e9 00		sbc #$00		sbc  #0
+.fe36	c9 cf		cmp #$cf		cmp  #>Screen-1                             ; wrap around ?
+.fe38	d0 02		bne $fe3c		bne  NoUpWrap
+.fe3a	a9 d3		lda #$d3		lda  #>ScreenMemoryEnd-1
+.fe3c					NoUpWrap:
+.fe3c	8d 32 02	sta $0232		sta  EditCursorLine+1
+.fe3f	60		rts			rts
+.fe40					ResetVectorDataArea:
+.fe40	a0 1c		ldy #$1c		ldy  #$1C                                   ; init 218-234
+.fe42					RVDALoop:
+.fe42	b9 b2 fb	lda $fbb2,y		lda  DefaultSettings,Y
+.fe45	99 18 02	sta $0218,y		sta  $218,Y
+.fe48	88		dey			dey
+.fe49	10 f7		bpl $fe42		bpl  RVDALoop
+.fe4b	a0 07		ldy #$07		ldy  #7                                     ; zero 200-206, 212
+.fe4d	a9 00		lda #$00		lda  #0
+.fe4f	8d 12 02	sta $0212		sta  BreakDisabled                          ; enable ctrl-c flag
+.fe52					RVDALoop2:
+.fe52	99 ff 01	sta $01ff,y		sta  CursorX-1,Y
+.fe55	88		dey			dey
+.fe56	d0 fa		bne $fe52		bne  RVDALoop2
+.fe58	60		rts			rts
+.fe59					ClearScreen:
+.fe59	a0 00		ldy #$00		ldy  #0 									; To is screen address
+.fe5b	84 f9		sty $f9			sty  ToAddress
+.fe5d	a9 d0		lda #$d0		lda  #>Screen
+.fe5f	85 fa		sta $fa			sta  ToAddress+1
+.fe61	a2 04		ldx #$04		ldx  #(ScreenSize+1)*4                      ; # of 256 byte pages.
+.fe63	a9 20		lda #$20		lda  #' '
+.fe65					ClearLoop:
+.fe65	91 f9		sta ($f9),y		sta  (ToAddress),Y 							; do one page
+.fe67	c8		iny			iny
+.fe68	d0 fb		bne $fe65		bne  ClearLoop
+.fe6a	e6 fa		inc $fa			inc  ToAddress+1 							; bump address
+.fe6c	ca		dex			dex   										; do as often as needed.
+.fe6d	d0 f6		bne $fe65		bne  ClearLoop
+.fe6f	60		rts			rts
+.fe70					VectorSetLoad:
+.fe70	48		pha			pha
+.fe71	ce 03 02	dec $0203		dec  ACIALoadFlag                           ; set load flag to $FF
+.fe74	a9 00		lda #$00		lda  #0                                     ; clr save flag
+.fe76					WriteACIASaveFlag:
+.fe76	8d 05 02	sta $0205		sta  ACIASaveFlag
+.fe79	68		pla			pla
+.fe7a	60		rts			rts
+.fe7b					VectorSetSave:
+.fe7b	48		pha			pha
+.fe7c	a9 01		lda #$01		lda  #1                                     ; set save flag
+.fe7e	d0 f6		bne $fe76		bne  WriteACIASaveFlag
+.fe80					GetCharAcia:
+.fe80	20 57 fb	jsr $fb57		jsr  ReadACIA								; read character from ACIA
+.fe83	29 7f		and #$7f		and  #$7F                                   ; clear bit 7
+.fe85	60		rts			rts
+.fe86					BitToNumber:
+.fe86	a0 08		ldy #$08		ldy  #8 									; if the first one sets C return 7
+.fe88					FindBitLoop:
+.fe88	88		dey			dey
+.fe89	0a		asl a			asl  a
+.fe8a	90 fc		bcc $fe88		bcc  FindBitLoop
+.fe8c	60		rts			rts
+.fe8d					GetNew:
+.fe8d	20 e9 fe	jsr $fee9		jsr  GetCharKbdAcia 						; get from source and echo.
+.fe90	4c ee ff	jmp $ffee		jmp  OutputCharacter
+.fe93					ASCIIToBinary:
+.fe93	c9 30		cmp #$30		cmp  #'0' 									; < 0 bad
+.fe95	30 12		bmi $fea9		bmi  InvalidChr
+.fe97	c9 3a		cmp #$3a		cmp  #'9'+1 								; <= 9 digit
+.fe99	30 0b		bmi $fea6		bmi  HexDigit
+.fe9b	c9 41		cmp #$41		cmp  #'A' 									; < A or > F bad
+.fe9d	30 0a		bmi $fea9		bmi  InvalidChr
+.fe9f	c9 47		cmp #$47		cmp  #'F'+1
+.fea1	10 06		bpl $fea9		bpl  InvalidChr
+.fea3	38		sec			sec  										; adjust for text.
+.fea4	e9 07		sbc #$07		sbc  #7
+.fea6					HexDigit:
+.fea6	29 0f		and #$0f		and  #$F 									; return as bits 0..3
+.fea8	60		rts			rts
+.fea9					InvalidChr:
+.fea9	a9 80		lda #$80		lda  #$80 									; convert failed, return bit 7 high.
+.feab	60		rts			rts
+.feac					PrintAddrData:
+.feac	20 b6 fe	jsr $feb6	    jsr  PrintAddr 								; print current address
+.feaf	ea		nop			nop
+.feb0	ea		nop			nop
+.feb1	20 e6 fb	jsr $fbe6		jsr  PrintSpace 							; seperate space
+.feb4	d0 07		bne $febd		bne  PrintByte 								; and data.
+.feb6					PrintAddr:
+.feb6	a2 03		ldx #$03		ldx  #3 									; print byte at offset 3 (FF)
+.feb8	20 bf fe	jsr $febf		jsr  PrintByteOffset
+.febb	ca		dex			dex   										; offset 2 (FE)
+>febc	2c					.byte $2C 									; the SKIP +2
+.febd					PrintByte:
+.febd	a2 00		ldx #$00		ldx  #0 									; byte at FC
+.febf					PrintByteOffset:
+.febf	b5 fc		lda $fc,x		lda  CurrentData,X 							; read, shift right 4 and print
+.fec1	4a		lsr a			lsr  A
+.fec2	4a		lsr a			lsr  A
+.fec3	4a		lsr a			lsr  A
+.fec4	4a		lsr a			lsr  A
+.fec5	20 ca fe	jsr $feca		jsr  PrintHexNibble
+.fec8	b5 fc		lda $fc,x		lda  CurrentData,X 							; re-read and fall through.
+.feca					PrintHexNibble:
+.feca	29 0f		and #$0f		and  #$F 									; convert to ASCII
+.fecc	09 30		ora #$30		ora  #'0'
+.fece	c9 3a		cmp #$3a		cmp  #'9'+1
+.fed0	30 03		bmi $fed5		bmi  IsDigitValue
+.fed2	18		clc			clc
+.fed3	69 07		adc #$07		adc  #7
+.fed5					IsDigitValue:
+.fed5	4c ee ff	jmp $ffee		jmp  OutputCharacter 						; and output
+.fed8	ea		nop			nop 										; filler.
+.fed9	ea		nop			nop
+.feda					RollNibbleToWord:
+.feda	a0 04		ldy #$04		ldy  #4 									; do it 4 times.
+.fedc	0a		asl a			asl  A 										; shift nibble into upper bits
+.fedd	0a		asl a			asl  A
+.fede	0a		asl a			asl  A
+.fedf	0a		asl a			asl  A
+.fee0					RollBitIntoWord:
+.fee0	2a		rol a			rol  A 										; shift bit in.
+.fee1	36 f9		rol $f9,x		rol  ToAddress,X 							; rotate into address
+.fee3	36 fa		rol $fa,x		rol  ToAddress+1,X
+.fee5	88		dey			dey  										; do 4 times
+.fee6	d0 f8		bne $fee0		bne  RollBitIntoWord
+.fee8	60		rts			rts
+.fee9					GetCharKbdAcia:
+.fee9	a5 fb		lda $fb			lda  InputFromSerial 						; check flag
+.feeb	d0 93		bne $fe80		bne  GetCharAcia 							; non-zero get from ACIA
+.feed	4c 00 fd	jmp $fd00		jmp  ReadKeyboard 							; else get from keyboard
+.fef0					PrintByteAtFE:
+.fef0	b1 fe		lda ($fe),y		lda  (FromAddress),Y 						; copy into $FC
+.fef2	85 fc		sta $fc			sta  CurrentData
+.fef4	4c bd fe	jmp $febd		jmp  PrintByte 								; and use that routine.
+.fef7					WriteAndBumpAddress:
+.fef7	91 fe		sta ($fe),y		sta  (FromAddress),Y 						; write in current address
+.fef9					BumpAddress:
+.fef9	e6 fe		inc $fe			inc  FromAddress 							; advance address
+.fefb	d0 02		bne $feff		bne  NoCarryOut
+.fefd	e6 ff		inc $ff			inc  FromAddress+1
+.feff					NoCarryOut:
+.feff	60		rts			rts
+.ff00					SystemReset:
+.ff00	d8		cld			cld  										; reset decimal mode snd stacks
+.ff01	a2 28		ldx #$28		ldx  #$28
+.ff03	9a		txs			txs
+.ff04	20 a6 fc	jsr $fca6		jsr  ResetACIA-Offset 						; reset ACIA
+.ff07	20 40 fe	jsr $fe40		jsr  ResetVectorDataArea 					; reset vectors
+.ff0a	20 59 fe	jsr $fe59		jsr  ClearScreen 							; clear screen
+.ff0d	8c 00 02	sty $0200		sty  CursorX
+.ff10					PrintPrompt:
+.ff10	b9 ea fc	lda $fcea,y		lda  BootText-Offset,Y
+.ff13	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.ff16	c8		iny			iny
+.ff17	c0 16		cpy #$16		cpy  #BootTextEnd-BootText
+.ff19	d0 f5		bne $ff10		bne  PrintPrompt
+.ff1b	20 eb ff	jsr $ffeb		jsr  InputCharacter 						; get a character
+.ff1e	29 df		and #$df		and  #$DF 									; capitalise it.
+.ff20	c9 44		cmp #$44		cmp  #'D'
+.ff22	d0 03		bne $ff27		bne  NotDKey
+.ff24	4c 00 fc	jmp $fc00		jmp  BootstrapDisk-Offset 					; D Bootstraps
+.ff27					NotDKey:
+.ff27	c9 4d		cmp #$4d		cmp  #'M'									; M monitors
+.ff29	d0 03		bne $ff2e		bne  NotMKey
+.ff2b	4c 00 fe	jmp $fe00		jmp  MonitorColdStart
+.ff2e					NotMKey:
+.ff2e	c9 57		cmp #$57		cmp  #'W' 									; W Warm starts vectors
+.ff30	d0 03		bne $ff35		bne  NotWKey
+.ff32	4c 00 00	jmp $0000		jmp  BASIC_WarmStart
+.ff35					NotWKey:
+.ff35	c9 43		cmp #$43		cmp  #'C' 									; if not C, go round again.
+.ff37	d0 c7		bne $ff00		bne  SystemReset
+.ff39	4c 11 bd	jmp $bd11		jmp  BASIC_ColdStart						; cold start BASIC
+.ff3c					KeyboardCharTable:
+>ff3c	50 3b 2f 20 5a 41 51			.byte 'P',59,'/',' ','Z','A','Q'			; row $02, bits $02-$80
+>ff43	2c 4d 4e 42 56 43 58			.byte ',','M','N','B','V','C','X'			; row $04
+>ff4a	4b 4a 48 47 46 44 53			.byte 'K','J','H','G','F','D','S'			; row $08
+>ff51	49 55 59 54 52 45 57			.byte 'I','U','Y','T','R','E','W'			; row $10
+>ff58	00 00 0d 0a 4f 4c 2e			.byte $00,$00,$0D,$0A,'O','L','.' 			; row $20
+>ff5f	00 5f 2d 3a 30 39 38			.byte $00,$5F,'-',':','0','9','8'			; row $40
+>ff66	37 36 35 34 33 32 31			.byte '7','6','5','4','3','2','1'			; row $80
+.ff6d					PrintRawOldCharacter:
+.ff6d	20 8c ff	jsr $ff8c		jsr  PrintOldCharacterAtCurrent 			; old character.
+.ff70					PrintRawStartOfLineA:
+.ff70	a2 00		ldx #$00		ldx  #0 									; zero cursor posiition.
+.ff72	8e 00 02	stx $0200		stx  CursorX
+.ff75					PrintRawCurrentA:
+.ff75	ae 00 02	ldx $0200		ldx  CursorX
+.ff78	a9 bd		lda #$bd		lda  #$BD                                   ; lda ScreenTop,x
+.ff7a	8d 2a 02	sta $022a		sta  ProcessFromTopAndDexEdit
+.ff7d	20 2a 02	jsr $022a		jsr  ProcessFromTopAndDexEdit
+.ff80	8d 01 02	sta $0201		sta  OldCharacter 							; save as old character.
+.ff83	a9 9d		lda #$9d		lda  #$9D                                   ; set back to sta abs,x
+.ff85	8d 2a 02	sta $022a		sta  ProcessFromTopAndDexEdit
+.ff88					PrintCursor:
+.ff88	a9 5f		lda #$5f		lda  #$5F 									; print underscore cursor character.
+.ff8a	d0 03		bne $ff8f		bne  PrintCharacterAtCurrent
+.ff8c					PrintOldCharacterAtCurrent:
+.ff8c	ad 01 02	lda $0201		lda  OldCharacter 							; old character
+.ff8f					PrintCharacterAtCurrent:
+.ff8f	ae 00 02	ldx $0200		ldx  CursorX 								; write A there.
+.ff92	4c 2a 02	jmp $022a		jmp  ProcessFromTopAndDexEdit
+.ff95					OldScreenRoutine:
+.ff95	20 2d bf	jsr $bf2d		jsr  BASIC_OldScreenHandler 				; call the ROM routine
+.ff98	4c 9e ff	jmp $ff9e		jmp  ContinueOutput 						; continue with the ACIA test.
+.ff9b					VectoredOutput:
+.ff9b	20 36 f8	jsr $f836		jsr  NewScreenHandler
+.ff9e					ContinueOutput:
+.ff9e	48		pha			pha
+.ff9f	ad 05 02	lda $0205		lda  ACIASaveFlag 							; check flag
+.ffa2	f0 17		beq $ffbb		beq  RestoreAExit                           ; if zero, pop A and exit
+.ffa4	68		pla			pla  										; get character back
+.ffa5	20 b1 fc	jsr $fcb1		jsr  WriteACIA-Offset                       ; write to acia
+.ffa8	c9 0d		cmp #$0d		cmp  #13
+.ffaa	d0 10		bne $ffbc		bne  Exit1                                  ; not cr, exit now.
+.ffac					TenNulls:
+.ffac	48		pha			pha  										; save A & X
+.ffad	8a		txa			txa
+.ffae	48		pha			pha
+.ffaf	a2 0a		ldx #$0a		ldx  #10 									; write this many NULLS
+.ffb1	a9 00		lda #$00		lda  #0
+.ffb3					NullLoop:
+.ffb3	20 b1 fc	jsr $fcb1		jsr  WriteACIA-Offset 						; write loop
+.ffb6	ca		dex			dex
+.ffb7	d0 fa		bne $ffb3		bne  NullLoop
+.ffb9	68		pla			pla   										; restore and exit
+.ffba	aa		tax			tax
+.ffbb					RestoreAExit:
+.ffbb	68		pla			pla
+.ffbc					Exit1:
+.ffbc	60		rts			rts
+.ffbd					Collect3Addr:
+.ffbd	20 a6 f9	jsr $f9a6		jsr  Collect2Addr
+.ffc0	20 e0 fb	jsr $fbe0		jsr  PrintGreater
+.ffc3	a2 03		ldx #$03		ldx  #3
+.ffc5	20 b1 f9	jsr $f9b1		jsr  CollectExtraAddress
+.ffc8	a5 fc		lda $fc			lda  CurrentData
+.ffca	a6 fd		ldx $fd			ldx  CurrentData+1
+.ffcc	85 e4		sta $e4			sta  CopyTarget
+.ffce	86 e5		stx $e5			stx  CopyTarget+1
+.ffd0	60		rts			rts
+.ffd1					HomeCursor:
+.ffd1	a2 02		ldx #$02		ldx  #2
+.ffd3					CopyHomeInfo:
+.ffd3	bd 22 02	lda $0222,x		lda  FirstScreenChar-1,X
+.ffd6	9d 27 02	sta $0227,x		sta  CharSrcPos-1,X
+.ffd9	9d 2a 02	sta $022a,x		sta  CharPosition-1,X
+.ffdc	ca		dex			dex
+.ffdd	d0 f4		bne $ffd3		bne  CopyHomeInfo
+.ffdf	60		rts			rts
+>ffe0	65					.byte <ScreenVisibleBottom                  ; cursor start
+>ffe1	17					.byte LineLengthMinus1                      ; line length - 1
+>ffe2	00					.byte ScreenSize  							; screen size 0=1k 1=2k
+.ffe3					PrintCurrentAddr:
+.ffe3	a9 2e		lda #$2e		lda  #'.'
+.ffe5	20 ee ff	jsr $ffee		jsr  OutputCharacter
+.ffe8	4c b6 fe	jmp $feb6		jmp  PrintAddr
+.ffeb					InputCharacter:
+.ffeb	6c 18 02	jmp ($0218)		jmp  ($218)                                 ; input routine
+.ffee					OutputCharacter:
+.ffee	6c 1a 02	jmp ($021a)		jmp  ($21A)                                 ; output routine
+.fff1					CheckControlC:
+.fff1	6c 1c 02	jmp ($021c)		jmp  ($21C)                                 ; ctrl-c routine
+.fff4					SetLoadMode:
+.fff4	6c 1e 02	jmp ($021e)		jmp  ($21E)                                 ; load set up routine
+.fff7					SetSaveMode:
+.fff7	6c 20 02	jmp ($0220)		jmp  ($220)                                 ; save set up routine
+>fffa	30 01					.word NMIHandler                            ; nmi
+>fffc	00 ff					.word SystemReset                           ; reset
+>fffe	c0 01					.word IRQHandler                            ; irq
+
+;******  End of listing

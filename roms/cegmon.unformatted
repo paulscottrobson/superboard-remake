@@ -1,0 +1,1477 @@
+; this compiles under the portable 64tass assembler.
+
+; note: the original text indicated that the fcxx segment should be
+; relocated to $f700 for c2/4.  to simplify the address circuitry, the
+; rom is wired to $f000-$ffff, with a11 ignored, and the chip disabled
+; when $fc00 (acia) is enabled.  this scheme maps the $fcxx segment to
+; $f400 in hardware, so the offset is calculated as $fcxx-$f4xx.  if
+; you follow the original cegmon wiring instructions (i don't have
+; these), then change the offest back to $fc00-$f700.
+
+; editor commands: (modified from original to be slightly more emacs-like
+; 
+; ctl-e	editor on/off
+; ctl-b back
+; ctl-f forward
+; ctl-p prev. line (up)
+; ctl-n next line (down)
+; ctl-y yank (copy character to input buffer)
+
+; this file is merged for c1/c2/600.  scan for the strings c1/c2, and
+; uncomment the appropriate line.  todo: once i find a decent linux
+; assembler supporting conditionals, convert to conditional
+
+
+BasicROM	=		$A000			; basic rom
+DiskController =	$C000			; diskcontroller controller (pia = +$00, acia = +$10)
+Screen	=			$D000			; screen ram
+Keyboard =			$DF00			; keyboard port
+
+;; c1/c2
+;Acia	=	$fc00	; serial port (mc6850 acia) for c2/c4
+acia	=	$f000	; serial port (mc6850 acia) for c1/superboard/uk101
+
+
+; basic rom routines
+; rom basic provides acia i/o for the c2/4, which has the acia at
+; $fc00.  the c1 must reproduce these in the monitor for the acia at
+; $f000.
+
+LA34B	=	BasicROM+$034B	; uk101 basicrom rubout key return
+LA374	=	BasicROM+$0374	; uk101 basicrom rubout key return
+LA636	=	BasicROM+$0636	; ctrl-c handler
+LBD11	=	BasicROM+$1D11	; basic cold start
+;lbf15	=	basicrom+$1f15	; output char to acia (c2/c4)
+;lbf22	=	basicrom+$1f22	; init acia (c2/c4)
+LBF2D	=	BasicROM+$1F2D	; crt simulator
+
+; c1/c2
+;offset	=	$fc00-$f400	; $fc00-fcff rom mapped to $f400 (c2/c4)
+Offset	=	$0		; no offset needed for c1/sb
+
+;					nmi		irq		width	size	start	cols	rows
+;		c2/4		$130	$1c0	64		1		128		64		28
+;		c1p/sbii	$130	$1c0	32		0		69		24		26
+;		uk101		$130	$1c0	64		0		140		48		14
+
+NMIHandler	=	$130		; nmi address
+IRQHandler	=	$1C0		; irq address
+
+OldOpcode = $E7			; opcode replaced when BrK set
+ToAddress = $F9 		; "To" address
+CurrentData = $FC 		; Store for current data
+FromAddress = $FE 		; "From" address
+
+CursorX = $200 			; cursor displacement current char.
+OldCharacter = $201 	; current character during SCREEN
+NewChar = $202 			; new character
+ACIALoadFlag = $203 	; $00 off, $ff acia load
+EditFlag = $204 		; $00 no edit cursor, $ff edit cursor
+ACIASaveFlag = $205 	; $00 off, $ff save to acia
+ScreenDelay = $206 		; screen delay (400 cycles/count)
+BreakDisabled = $212 	; non-zero if break disabled.
+AutoRepeatCount = $214 	; auto repeat count.
+FinalKey = $215 		; final value of key (ascii)
+LastChar = $216 		; pre shift lst char for repeat.
+EditCursorDisp = $22F 	; edit cursor displacement
+EditCursorChar = $230 	; character under edit cursor
+EditCursorLine = $231 	; Edit cursors line on screen
+UserRoutine = $233 		; Users machine code routine.
+
+;	screen parameters for superboard
+
+LineWidth	=	32		; screen width
+ScreenSize	=	0		; screen size 0=1k 1=2k
+
+FirstVisible	=	133	; set screen offset
+ColumnsVisible	=	24	; set columns to display
+RowsVisible	=	24		; set rows to display
+
+LineLengthMinus1	=	ColumnsVisible-1
+
+ScreenVisibleTop	=	Screen+FirstVisible
+ScreenVisibleBottom	=	(RowsVisible-1)*LineWidth+ScreenVisibleTop
+ScreenMemoryEnd	=		(ScreenSize+1)*1024+Screen
+
+	*=	$F800
+
+; rubout
+
+LF800	LDA	$E
+	BEQ	LF80A
+	DEC	$E
+	BEQ	LF80A
+	DEC	$E
+LF80A	LDA	#' '
+	STA	OldCharacter
+	JSR	LFF8F
+	BPL	LF82D
+	SEC
+	LDA	$22B
+	SBC	#LineWidth ;$40
+	STA	$22B
+	LDA	$22B+1
+	SBC	#0
+	STA	$22B+1
+	JSR	CheckScreenBottom
+	BCS	LF82D
+	JSR	HomeCursor
+LF82D	STX	CursorX
+	JSR	LFF88
+	JMP	LF8D2
+
+; *******************************************************************************************
+;
+; 										new screen handler
+;
+; *******************************************************************************************
+
+NewScreenHandler	STA	NewChar
+	PHA
+	TXA
+	PHA
+	TYA
+	PHA
+	LDA	NewChar
+	BNE	LF846	; not null
+	JMP	LF8D2
+
+LF846	LDY	ScreenDelay	; screen delay
+	BEQ	LF84E
+	JSR	Delay2-Offset
+
+LF84E	CMP	#$5F
+	BEQ	LF800
+	CMP	#$C
+	BNE	LF861
+
+; ctrl-l
+
+	JSR	PrintCharacterAtCurrent
+	JSR	HomeCursor
+	STX	CursorX
+	BEQ	LF8CF
+
+LF861	CMP	#$A
+	BEQ	LF88C
+	CMP	#$1E
+	BEQ	LF8E0
+	CMP	#$B
+	BEQ	LF87D
+	CMP	#$1A
+	BEQ	LF8D8
+	CMP	#$D
+	BNE	LF87A
+
+; cr
+
+	JSR	LFF6D
+	BNE	LF8D2
+LF87A	STA	OldCharacter
+
+; ctrl-k
+
+LF87D	JSR	PrintCharacterAtCurrent
+	INC	CursorX
+	INX
+	CPX	$222
+	BMI	LF8CF
+	JSR	LFF70
+
+; lf
+
+LF88C	JSR	PrintCharacterAtCurrent
+	LDY	#2
+	JSR	LFBD2
+	BCS	LF89E
+	LDX	#3
+	JSR	LFDEE
+	JMP	LF8CF
+
+LF89E	JSR	LFE28
+	JSR	HomeCursor
+	JSR	LFDEE
+	LDX	$222
+LF8AA	JSR	$227
+	BPL	LF8AA
+	INX
+	JSR	LFDEE
+	LDX	#3
+	JSR	LFDEE
+	JSR	CheckScreenBottom
+	BCC	LF8AA
+	LDA	#' '
+LF8BF	JSR	$22A
+	BPL	LF8BF
+	LDX	#1
+LF8C6	LDA	$223,X
+	STA	$228,X
+	DEX
+	BPL	LF8C6
+LF8CF	JSR	LFF75
+LF8D2	PLA
+	TAY
+	PLA
+	TAX
+	PLA
+	RTS
+
+; ctrl-z
+
+LF8D8	JSR	ClearScreen
+	STA	OldCharacter
+	BEQ	LF904
+
+; ctrl-shift-n
+
+LF8E0	LDA	#' '
+	JSR	LFF8F
+	JSR	HomeCursor
+LF8E8	LDX	$222
+	LDA	#' '
+LF8ED	JSR	$22A
+	BPL	LF8ED
+	STA	OldCharacter
+	LDY	#2
+	JSR	LFBD2
+	BCS	LF904
+	LDX	#3
+	JSR	LFDEE
+	JMP	LF8E8
+
+LF904	JSR	HomeCursor
+	STX	CursorX
+	BEQ	LF8D2
+
+LF90C	JSR	Collect2Addr
+LF90F	JSR	PrintCRLF
+	JSR	PrintAddr
+	JSR	PrintSpace
+	JSR	PrintGreater
+	LDX	#$10	; # bytes displayed
+	STX	$FD
+LF91F	JSR	PrintSpace
+	JSR	PrintByteAtFE
+	JSR	CheckEnd
+	BCS	LF97B
+	JSR	BumpAddress
+	DEC	$FD
+	BNE	LF91F
+	BEQ	LF90F
+
+; 'm'	move memory
+
+LF933	JSR	Collect3Addr
+	JSR	CopyBlock
+	BCS	MonitorCmdAddrMode
+
+; 'r'	restart from breakpoint
+
+LF93B	LDX	$E4
+	TXS
+	LDA	$E6
+	PHA
+	LDA	$E5
+	PHA
+	LDA	$E3
+	PHA
+	LDA	$E0
+	LDX	$E1
+	LDY	$E2
+	RTI
+
+; 'z'	set breakpoint
+
+LF94E	LDX	#3
+LF950	LDA	LFA4C-1,X
+	STA	IRQHandler-1,X
+	DEX
+	BNE	LF950
+	JSR	GetNew
+	JSR	Collect1Addr
+	LDA	(FromAddress),Y
+	STA	OldOpcode
+	TYA
+	STA	(FromAddress),Y
+	BEQ	MonitorCmdAddrMode
+
+; 's'	save
+
+LF968	JMP	SaveMachineCode
+
+; 'l'	load
+
+LF96B	DEC	$FB
+	BNE	LF9E8
+
+; 't'	tabular display
+
+LF96F	BEQ	LF90C
+LF971	RTS
+
+LF972	LDA	$FB
+	BNE	LF971
+	LDA	#'?'
+	JSR	OutputCharacter
+
+LF97B	LDX	#$28
+	TXS
+MonitorCmdAddrMode	JSR	PrintCRLF
+	LDY	#0
+	STY	$FB
+
+	JSR	PrintGreater
+
+; '.'	command/address mode
+
+LF988	JSR	GetNew
+	CMP	#'M'
+	BEQ	LF933
+	CMP	#'R'
+	BEQ	LF93B
+	CMP	#'Z'
+	BEQ	LF94E
+	CMP	#'S'
+	BEQ	LF968
+	CMP	#'L'
+	BEQ	LF96B
+	CMP	#'U'
+	BNE	LF9D6
+	JMP	(UserRoutine)
+
+; *******************************************************************************************
+;
+;								Collect two addresses (FE,F9)
+;
+; *******************************************************************************************
+
+Collect2Addr	JSR	GetNew
+	JSR	Collect1Addr
+	JSR	PrintComma
+	LDX	#0
+LF9B1	JSR	GetNew
+	.BYTE	$2C
+
+; *******************************************************************************************
+;
+;								Collect address , store in FE
+;
+; *******************************************************************************************
+
+Collect1Addr	LDX	#5
+	JSR	LF9C0
+	JSR	GetNew
+	.BYTE	$2C
+
+; *******************************************************************************************
+;
+;			Collect pair for data byte, store in FC (call GetNew first)
+;
+; *******************************************************************************************
+
+GetPrc	LDX	#3
+LF9C0	JSR	LF9C6
+	JSR	GetNew
+LF9C6	CMP	#'.'
+	BEQ	LF988
+	CMP	#'/'
+	BEQ	LF9E8
+	JSR	ASCIIToBinary
+	BMI	LF972
+	JMP	RollNibbleToWord
+
+LF9D6	CMP	#'T'
+	BEQ	LF96F
+	JSR	Collect1Addr
+
+LF9DD	LDA	#'/'
+	JSR	OutputCharacter
+	JSR	PrintByteAtFE
+	JSR	PrintSpace
+
+; '/'	data mode
+
+LF9E8	JSR	GetNew
+	CMP	#'G'
+	BNE	LF9F2
+	JMP	(FromAddress)
+
+LF9F2	CMP	#','
+	BNE	LF9FC
+	JSR	BumpAddress
+	JMP	LF9E8
+
+LF9FC	CMP	#$A
+	BEQ	LFA16
+	CMP	#$D
+	BEQ	LFA1B
+	CMP	#'^'
+	BEQ	LFA21
+	CMP	#$27
+	BEQ	LFA3A
+	JSR	GetPrc
+	LDA	CurrentData
+	STA	(FromAddress),Y
+LFA13	JMP	LF9E8
+
+LFA16	LDA	#$D
+	JSR	OutputCharacter
+
+LFA1B	JSR	BumpAddress
+	JMP	LFA31
+
+; '^'
+
+LFA21	SEC
+	LDA	FromAddress
+	SBC	#1
+	STA	FromAddress
+	LDA	$FF
+	SBC	#0
+	STA	$FF
+MonitorDataModeLoop	JSR	PrintCRLF
+
+LFA31	JSR	PrintAddr
+	JMP	LF9DD
+
+LFA37	JSR	WriteAndBumpAddress
+
+; "'"
+
+LFA3A	JSR	GetNew
+	CMP	#$27
+	BNE	LFA46
+	JSR	PrintComma
+	BNE	LFA13
+LFA46	CMP	#$D
+	BEQ	MonitorDataModeLoop
+	BNE	LFA37
+
+LFA4C	JMP	LFA4F
+
+LFA4F	STA	$E0
+	PLA
+	PHA
+	AND	#$10
+	BNE	LFA5A
+	LDA	$E0
+	RTI
+
+; save registers on break
+
+LFA5A	STX	$E1
+	STY	$E2
+	PLA
+	STA	$E3
+	CLD
+	SEC
+	PLA
+	SBC	#2
+	STA	$E5
+	PLA
+	SBC	#0
+	STA	$E6
+	TSX
+	STX	$E4 ; **bug fix** (original value was $e1)
+	LDY	#0
+	LDA	OldOpcode
+	STA	($E5),Y
+	LDA	#$E0
+	STA	FromAddress
+	STY	$FF
+	BNE	MonitorDataModeLoop
+
+SaveMachineCode	JSR	Collect3Addr
+	JSR	SetSaveMode
+	JSR	GetCharKbdAcia
+	JSR	OutputCharacter
+	JSR	PrintFullStop
+	LDA	#'/'
+	JSR	OutputCharacter
+	BNE	LFA97
+LFA94	JSR	BumpAddress
+
+LFA97	JSR	PrintByteAtFE
+	LDA	#$D
+	JSR	WriteACIA-Offset
+	JSR	CheckEnd
+	BCC	LFA94
+	LDA	$E4
+	LDX	$E5
+	STA	FromAddress
+	STX	$FF
+	JSR	PrintFullStop
+	LDA	#'G'
+	JSR	OutputCharacter
+	JSR	TenNulls
+	STY	ACIASaveFlag
+	JMP	MonitorCmdAddrMode
+
+; *******************************************************************************************
+;
+;										Screen Editor Entry
+;
+; *******************************************************************************************
+
+ScreenEditorEntry	TXA
+	PHA
+	TYA
+	PHA
+	LDA	EditFlag
+	BPL	LFB1F
+LFAC6	LDY	EditCursorDisp
+	LDA	EditCursorLine
+	STA	$E4
+	LDA	EditCursorLine+1
+	STA	$E5
+	LDA	($E4),Y
+	STA	EditCursorChar
+	LDA	#$A1
+	STA	($E4),Y
+	JSR	ReadKeyboard
+	LDA	EditCursorChar
+	STA	($E4),Y
+	LDA	FinalKey
+	CMP	#$11		; ctl-q =copy character to buffer
+	BEQ	LFB13
+	CMP	#2		; ctl-b = backward
+	BEQ	LFB0D
+	CMP	#$6		; ctl-f = forward
+	BEQ	LFB07
+	CMP	#$10		; ctl-p = previous
+	BEQ	LFB01
+	CMP	#$E		; ctl-n (next line)
+	BNE	LFB22
+
+; ctrl-n (next line)
+
+	JSR	LFB7C
+	JMP	LFAC6
+
+; ctrl-p (prev line)
+
+LFB01	JSR	LFE28
+	JMP	LFAC6
+
+; ctrl-f (forward)
+
+LFB07	JSR	LFB6B
+	JMP	LFAC6
+
+; ctrl-a (backward)
+
+LFB0D	JSR	LFE19
+	JMP	LFAC6
+
+; ctrl-q (copy character)
+
+LFB13	LDA	EditCursorChar
+	STA	FinalKey
+	JSR	LFB6B
+	JMP	LFB43
+
+LFB1F	JSR	ReadKeyboard
+
+LFB22	CMP	#5
+	BNE	LFB43
+	LDA	EditFlag
+	EOR	#$FF
+	STA	EditFlag
+	BPL	LFB1F
+	LDA	$22B
+	STA	EditCursorLine
+	LDA	$22B+1
+	STA	EditCursorLine+1
+	LDX	#0
+	STX	EditCursorDisp
+	BEQ	LFAC6
+LFB43	JMP	LFDD3
+
+; *******************************************************************************************
+;
+;									Input Character from ACIA/Keyboard
+;
+; *******************************************************************************************
+
+VectoredInput	BIT	ACIALoadFlag
+	BPL	LFB68	; load flag clr
+LFB4B	LDA	#2
+	JSR WriteKeyboardColA
+	JSR ReadKeyboardColA
+	AND	#$10
+	BNE	LFB61	; space key pressed
+
+; *******************************************************************************************
+;
+; 										input from acia
+;
+; *******************************************************************************************
+
+ReadACIA	LDA	Acia
+	LSR	A
+	BCC	LFB4B
+	LDA	Acia+1
+	RTS
+
+LFB61	LDA	#0
+	STA	$FB
+	STA	ACIALoadFlag
+LFB68	JMP	ScreenEditorEntry
+
+LFB6B	LDX	$222
+	CPX	EditCursorDisp
+	BEQ	LFB77
+	INC	EditCursorDisp
+	RTS
+
+LFB77	LDX	#0
+	STX	EditCursorDisp
+LFB7C	CLC
+	LDA	EditCursorLine
+	ADC	#LineWidth ;$40
+	STA	EditCursorLine
+	LDA	EditCursorLine+1
+	ADC	#0
+	CMP	#>ScreenMemoryEnd ;$d8
+	BNE	LFB90
+	LDA	#>Screen
+LFB90	STA	EditCursorLine+1
+LFB93	RTS
+
+; *******************************************************************************************
+;
+; 										ctrl-c check
+;
+; *******************************************************************************************
+
+ControlCCheck	LDA	BreakDisabled
+	BNE	LFB93	; disable flag set
+	LDA	#1
+	JSR WriteKeyboardColA
+	BIT	Keyboard
+	BVS	LFB93 	; bvc for non-invert keyboard
+	LDA	#4
+	JSR WriteKeyboardColA
+	BIT	Keyboard
+	BVS	LFB93 	; bvc for non-invert keyboard
+	LDA	#3	; ctrl-c pressed
+	JMP	LA636
+
+LFBB2	.WORD	VectoredInput	; 218 input
+	.WORD	VectoredOutput	; 21a output
+	.WORD	ControlCCheck	; 21c ctrl-c
+	.WORD	VectorSetLoad	; 21e load
+	.WORD	VectorSetSave	; 220 save
+	.BYTE	LineLengthMinus1	; 222
+	.WORD	ScreenVisibleTop	; 223
+	.WORD	ScreenVisibleBottom	; 225
+	LDA	ScreenVisibleTop,X	; 227
+	STA	ScreenVisibleTop,X	; 22a
+	DEX		; 22d
+	RTS		; 22e
+	.BYTE	$00	; 22f
+	.BYTE	$20	; 230
+	.WORD	ScreenVisibleTop	; 231
+	.WORD	LF988	; 233
+
+; *******************************************************************************************
+;
+;									Check off bottom of screen
+;
+; *******************************************************************************************
+
+CheckScreenBottom	LDX	$222
+LFBD2	SEC
+	LDA	$22B
+	SBC	$223,Y
+	LDA	$22B+1
+	SBC	$223+1,Y
+	RTS
+
+; *******************************************************************************************
+;
+;									Print various characters
+;
+; *******************************************************************************************
+
+PrintGreater	LDA	#'>'
+	.BYTE	$2C
+PrintComma	LDA	#','
+	.BYTE	$2C
+PrintSpace	LDA	#' '
+	JMP	OutputCharacter
+
+; *******************************************************************************************
+;
+;										Check Reached End
+;
+; *******************************************************************************************
+
+CheckEnd	SEC
+	LDA	FromAddress
+	SBC	ToAddress
+	LDA	$FF
+	SBC	ToAddress+1
+	RTS
+
+; *******************************************************************************************
+;
+;											Print CRLF
+;
+; *******************************************************************************************
+
+
+PrintCRLF	LDA	#$D
+	JSR	OutputCharacter
+	LDA	#$A
+	JMP	OutputCharacter
+
+	.BYTE	$40
+
+; *******************************************************************************************
+;
+;										Bootstrap FDC
+;
+; *******************************************************************************************
+
+
+BootstrapDisk	JSR	LFC0C-Offset
+	JMP	($FD)
+
+	JSR	LFC0C-Offset
+	JMP	MonitorColdStart
+
+LFC0C	LDY	#0
+	STY	DiskController+1
+	STY	DiskController
+	LDX	#4
+	STX	DiskController+1
+	STY	DiskController+3
+	DEY
+	STY	DiskController+2
+	STX	DiskController+3
+	STY	DiskController+2
+	LDA	#$FB
+	BNE	LFC33
+
+LFC2A	LDA	#2
+	BIT	DiskController
+	BEQ	LFC4D
+	LDA	#$FF
+LFC33	STA	DiskController+2
+	JSR	LFCA5-Offset
+	AND	#$F7
+	STA	DiskController+2
+	JSR	LFCA5-Offset
+	ORA	#8
+	STA	DiskController+2
+	LDX	#$18
+	JSR	LFC91-Offset
+	BEQ	LFC2A
+LFC4D	LDX	#$7F
+	STX	DiskController+2
+	JSR	LFC91-Offset
+LFC55	LDA	DiskController
+	BMI	LFC55
+LFC5A	LDA	DiskController
+	BPL	LFC5A
+	LDA	#3
+	STA	DiskController+$10
+	LDA	#$58
+	STA	DiskController+$10
+	JSR	LFC9C-Offset
+	STA	FromAddress
+	TAX
+	JSR	LFC9C-Offset
+	STA	$FD
+	JSR	LFC9C-Offset
+	STA	$FF
+	LDY	#0
+LFC7B	JSR	LFC9C-Offset
+	STA	($FD),Y
+	INY
+	BNE	LFC7B
+	INC	FromAddress
+	DEC	$FF
+	BNE	LFC7B
+	STX	FromAddress
+	LDA	#$FF
+	STA	DiskController+2
+	RTS
+
+LFC91	LDY	#$F8
+LFC93	DEY
+	BNE	LFC93
+	EOR	$FF,X
+	DEX
+	BNE	LFC91
+	RTS
+
+; input char from diskcontroller
+
+LFC9C	LDA	DiskController+$10
+	LSR	A
+	BCC	LFC9C
+	LDA	DiskController+$11
+LFCA5	RTS
+
+; *******************************************************************************************
+;
+; 									init acia
+;
+; *******************************************************************************************
+
+ResetACIA	LDA	#3	; reset acia
+	STA	Acia
+; (c1/c2) c2 initializes with $b1, the c1 initializes with $11.
+; i would think that this is generally of no consequence, since the acia's irq is not
+; connected to the irq line by default.
+	LDA	#$B1	; /16, 8bits, 2stop, rts low, irq on recv.
+;	lda	#$11	; /16, 8bits, 2stop, rts low
+	STA	Acia
+	RTS
+
+; *******************************************************************************************
+;
+; 										output char to acia
+;
+; *******************************************************************************************
+
+WriteACIA	PHA
+LFCB2	LDA	Acia
+	LSR	A
+	LSR	A
+	BCC	LFCB2
+	PLA
+	STA	Acia+1
+	RTS
+
+; *******************************************************************************************
+;
+; 							set keyboard row (a)  1=r0, 2=r1, 4=r2 etc
+;
+; *******************************************************************************************
+
+WriteKeyboardColA	EOR	#$FF
+	STA	Keyboard
+	EOR	#$FF
+	RTS
+
+; *******************************************************************************************
+;
+; 						read keyboard col (x) 1=c0, 2=c1, 4=c2, 0=none
+;
+; *******************************************************************************************
+
+ReadKeyboardColX	PHA
+	JSR	ReadKeyboardColA-Offset
+	TAX
+	PLA
+	DEX
+	INX
+	RTS
+
+; *******************************************************************************************
+;
+; 						read keyboard col (A) 1=c0, 2=c1, 4=c2, 0=none
+;
+; *******************************************************************************************
+
+ReadKeyboardColA	LDA	Keyboard
+	EOR	#$FF
+	RTS
+
+; uk101 basicrom rom rubout key handler
+
+LFCD5	CMP	#$5F	; rubout
+	BEQ	LFCDC
+	JMP	LA374
+
+LFCDC	JMP	LA34B
+
+; *******************************************************************************************
+;
+; 											delay 6500 Cycles
+;
+; *******************************************************************************************
+
+KDelay	LDY	#$10
+Delay2	LDX	#$40
+LFCE3	DEX
+	BNE	LFCE3
+	DEY
+	BNE	Delay2
+	RTS
+
+LFCEA	.TEXT	'CEGMON(C)1980 D/C/W/M?'
+;lfcea	.byte	'dave'
+;.byte	$27
+;.byte	's c2-4p  d/c/w/m?'
+
+; *******************************************************************************************
+;
+; 									polled keyboard input routine
+;
+; *******************************************************************************************
+
+ReadKeyboard	TXA
+	PHA
+	TYA
+	PHA
+
+LFD04	LDA	#$80	; row 7
+LFD06	JSR WriteKeyboardColA	; set row
+	JSR ReadKeyboardColX	; read col
+	BNE	LFD13	; key press
+
+	LSR	A	; next row
+	BNE	LFD06
+	BEQ	LFD3A
+
+LFD13	LSR	A
+	BCC	LFD1F
+	TXA
+	AND	#$20
+	BEQ	LFD3A
+	LDA	#$1B
+	BNE	LFD50
+
+LFD1F	JSR	LFE86
+	TYA
+	STA	FinalKey
+	ASL	A
+	ASL	A
+	ASL	A
+	SEC
+	SBC	FinalKey
+	STA	FinalKey
+	TXA
+	LSR	A
+	ASL	A
+	JSR	LFE86
+	BEQ	LFD47
+	LDA	#0
+LFD3A	STA	LastChar
+LFD3D	STA	$213
+	LDA	#2
+	STA	AutoRepeatCount
+	BNE	LFD04
+
+LFD47	CLC
+	TYA
+	ADC	FinalKey
+	TAY
+	LDA	LFF3C-1,Y
+
+LFD50	CMP	$213
+	BNE	LFD3D
+	DEC	AutoRepeatCount
+	BEQ	LFD5F
+	JSR	KDelay-Offset
+	BEQ	LFD04
+
+LFD5F	LDX	#$64
+	CMP	LastChar
+	BNE	LFD68
+	LDX	#$F
+LFD68	STX	AutoRepeatCount
+	STA	LastChar
+	CMP	#$21
+	BMI	LFDD0
+
+	CMP	#$5F
+	BEQ	LFDD0
+
+	LDA	#1
+	JSR WriteKeyboardColA
+	JSR ReadKeyboardColA
+	STA	FinalKey
+	AND	#1
+	TAX
+	LDA	FinalKey
+	AND	#6
+	BNE	LFDA2
+	BIT	$213
+	BVC	LFDBB
+	TXA
+	EOR	#1
+	AND	#1
+	BEQ	LFDBB
+	LDA	#$20
+	BIT	FinalKey
+	BVC	LFDC3
+	LDA	#$C0
+	BNE	LFDC3
+
+LFDA2	BIT	$213
+	BVC	LFDAA
+	TXA
+	BEQ	LFDBB
+LFDAA	LDY	$213
+	CPY	#$31
+	BCC	LFDB9
+	CPY	#$3C
+	BCS	LFDB9
+	LDA	#$F0
+	BNE	LFDBB
+
+LFDB9	LDA	#$10
+LFDBB	BIT	FinalKey
+	BVC	LFDC3
+	CLC
+	ADC	#$C0
+LFDC3	CLC
+	ADC	$213
+	AND	#$7F
+	BIT	FinalKey
+	BPL	LFDD0
+	ORA	#$80
+LFDD0	STA	FinalKey
+LFDD3	PLA
+	TAY
+	PLA
+	TAX
+	LDA	FinalKey
+	RTS
+
+LFDDB	JSR	BumpAddress
+	INC	$E4
+	BNE	CopyBlock
+	INC	$E5
+
+; *******************************************************************************************
+;
+;					Copy block of memory (FE) -> (E4), end address in (F9)
+;
+; *******************************************************************************************
+
+CopyBlock	LDA	(FromAddress),Y
+	STA	($E4),Y
+	JSR	CheckEnd
+	BCC	LFDDB
+	RTS
+
+LFDEE	CLC
+	LDA	#LineWidth ;$40
+	ADC	$228,X
+	STA	$228,X
+	LDA	#0
+	ADC	$228+1,X
+	STA	$228+1,X
+	RTS
+
+; *******************************************************************************************
+;
+;										Monitor entry point
+;
+; *******************************************************************************************
+
+MonitorColdStart	LDX	#$28
+	TXS
+	CLD
+	JSR	ResetACIA-Offset
+	JSR	LFE40
+	NOP
+	NOP
+MonitorWarmStart:	
+	JSR	ClearScreen
+	STA	OldCharacter
+	STY	FromAddress
+	STY	$FF
+	JMP	MonitorCmdAddrMode
+
+LFE19	LDX	EditCursorDisp
+	BEQ	LFE22
+	DEC	EditCursorDisp
+	RTS
+
+LFE22	LDX	$222
+	STX	EditCursorDisp
+LFE28	SEC
+	LDA	EditCursorLine
+	SBC	#LineWidth ;$40
+	STA	EditCursorLine
+	LDA	EditCursorLine+1
+	SBC	#0
+	CMP	#>Screen-1 ;$cf
+	BNE	LFE3C
+	LDA	#>ScreenMemoryEnd-1 ;$d7
+LFE3C	STA	EditCursorLine+1
+	RTS
+
+LFE40	LDY	#$1C	; init 218-234
+LFE42	LDA	LFBB2,Y
+	STA	$218,Y
+	DEY
+	BPL	LFE42
+	LDY	#7	; zero 200-206, 212
+	LDA	#0
+	STA	BreakDisabled	; enable ctrl-c flag
+LFE52	STA	CursorX-1,Y
+	DEY
+	BNE	LFE52
+	RTS
+
+; *******************************************************************************************
+;
+; 										clear screen
+;
+; *******************************************************************************************
+
+ClearScreen	LDY	#0
+	STY	ToAddress
+	LDA	#>Screen
+	STA	ToAddress+1
+	LDX	#ScreenSize+1*4 ;8
+	LDA	#' '
+LFE65	STA	(ToAddress),Y
+	INY
+	BNE	LFE65
+	INC	ToAddress+1
+	DEX
+	BNE	LFE65
+	RTS
+
+; *******************************************************************************************
+;
+; 								set load / clear save
+;
+; *******************************************************************************************
+
+VectorSetLoad	PHA
+	DEC	ACIALoadFlag	; set load flag
+	LDA	#0	; clr save flag
+LFE76	STA	ACIASaveFlag
+	PLA
+	RTS
+
+; *******************************************************************************************
+;
+; 									set save flag
+;
+; *******************************************************************************************
+
+VectorSetSave	PHA
+	LDA	#1	; set save flag
+	BNE	LFE76
+
+; *******************************************************************************************
+;
+; 								input char from acia
+;
+; *******************************************************************************************
+
+GetCharAcia	JSR	ReadACIA
+	AND	#$7F	; clear bit 7
+	RTS
+
+LFE86	LDY	#8
+LFE88	DEY
+	ASL	A
+	BCC	LFE88
+	RTS
+
+; *******************************************************************************************
+;
+;								Get new char and echo to display
+;
+; *******************************************************************************************
+
+GetNew	JSR	GetCharKbdAcia
+	JMP	OutputCharacter
+
+; *******************************************************************************************
+;
+; 							convert ascii-hex char to binary
+;
+; *******************************************************************************************
+
+ASCIIToBinary	CMP	#'0'
+	BMI	LFEA9
+	CMP	#'9'+1
+	BMI	LFEA6
+	CMP	#'A'
+	BMI	LFEA9
+	CMP	#'F'+1
+	BPL	LFEA9
+	SEC
+	SBC	#7
+LFEA6	AND	#$F
+	RTS
+
+LFEA9	LDA	#$80
+	RTS
+
+; *******************************************************************************************
+;
+;								Print address in FE, space, value in FC
+;
+; *******************************************************************************************
+
+PrintAddrData
+	JSR	PrintAddr
+	NOP
+	NOP
+	JSR	PrintSpace
+	BNE	PrintByte
+
+; *******************************************************************************************
+;
+;										Print address in (FE)
+;	
+; *******************************************************************************************
+
+PrintAddr	LDX	#3
+	JSR	LFEBF
+	DEX
+	.BYTE	$2C
+
+; *******************************************************************************************
+;
+;											Print byte in FC
+;
+; *******************************************************************************************
+
+PrintByte	LDX	#0
+
+LFEBF	LDA	CurrentData,X
+	LSR	A
+	LSR	A
+	LSR	A
+	LSR	A
+	JSR	PrintHexNibble
+	LDA	CurrentData,X
+
+; *******************************************************************************************
+;
+;										Output Hex value in A
+;
+; *******************************************************************************************
+
+PrintHexNibble	AND	#$F
+	ORA	#'0'
+	CMP	#'9'+1
+	BMI	LFED5
+	CLC
+	ADC	#7
+LFED5	JMP	OutputCharacter
+
+	.BYTE	$EA,$EA
+
+; *******************************************************************************************
+;
+;								Roll Nibble into FE/FC depending on X
+;
+; *******************************************************************************************
+RollNibbleToWord	LDY	#4
+	ASL	A
+	ASL	A
+	ASL	A
+	ASL	A
+LFEE0	ROL	A
+	ROL	ToAddress,X
+	ROL	ToAddress+1,X
+	DEY
+	BNE	LFEE0
+	RTS
+
+; *******************************************************************************************
+;
+;									Get key from keyboard/ACIA
+;
+; *******************************************************************************************
+
+GetCharKbdAcia	LDA	$FB
+	BNE	GetCharAcia
+	JMP	ReadKeyboard
+
+; *******************************************************************************************
+;
+;								Print byte at (FE),Y assumes Y = 0
+;
+; *******************************************************************************************
+
+PrintByteAtFE	LDA	(FromAddress),Y
+	STA	CurrentData
+	JMP	PrintByte
+
+; *******************************************************************************************
+;
+;						Write / Bump current address (assumes Y = 0)
+;
+; *******************************************************************************************
+
+WriteAndBumpAddress	STA	(FromAddress),Y
+BumpAddress	INC	FromAddress
+	BNE	LFEFF
+	INC	$FF
+LFEFF	RTS
+
+; *******************************************************************************************
+;
+;									System Entry Point
+;
+; *******************************************************************************************
+
+SystemReset	CLD
+	LDX	#$28
+	TXS
+	JSR	ResetACIA-Offset
+	JSR	LFE40
+	JSR	ClearScreen
+	STY	CursorX
+
+LFF10	LDA	LFCEA-Offset,Y
+	JSR	OutputCharacter
+	INY
+	CPY	#$16
+	BNE	LFF10
+
+	JSR	InputCharacter
+	AND	#$DF
+	CMP	#'D'
+	BNE	LFF27
+	JMP	BootstrapDisk-Offset
+
+LFF27	CMP	#'M'
+	BNE	LFF2E
+	JMP	MonitorColdStart
+
+LFF2E	CMP	#'W'
+	BNE	LFF35
+	JMP	0
+
+LFF35	CMP	#'C'
+	BNE	SystemReset
+	JMP	LBD11
+
+; keyboard matrix
+
+LFF3C	.BYTE	'P',59,'/',$20,'Z','A','Q'
+	.BYTE	',','M','N','B','V','C','X'
+	.BYTE	'K','J','H','G','F','D','S'
+	.BYTE	'I','U','Y','T','R','E','W'
+	.BYTE	$00,$00,$0D,$0A,'O','L','.'
+	.BYTE	$00,$5F,'-',':','0','9','8'
+	.BYTE	'7','6','5','4','3','2','1'
+
+LFF6D	JSR	PrintCharacterAtCurrent
+
+LFF70	LDX	#0
+	STX	CursorX
+LFF75	LDX	CursorX
+	LDA	#$BD	; lda abs,x
+	STA	$22A
+	JSR	$22A
+	STA	OldCharacter
+	LDA	#$9D	; sta abs,x
+	STA	$22A
+LFF88	LDA	#$5F
+	BNE	LFF8F
+
+;
+;	Print char at cursor location.
+;
+PrintCharacterAtCurrent	LDA	OldCharacter
+LFF8F	LDX	CursorX
+	JMP	$22A
+
+; *******************************************************************************************
+;
+;										Old Screen Handler
+;
+; *******************************************************************************************
+
+
+OldScreenRoutine	JSR	LBF2D
+	JMP	LFF9E
+
+; *******************************************************************************************
+;
+;									Output to ACIA/Screen
+;
+; *******************************************************************************************
+
+VectoredOutput	JSR	NewScreenHandler
+LFF9E	PHA
+	LDA	ACIASaveFlag
+	BEQ	LFFBB	; save flag clr
+	PLA
+	JSR	WriteACIA-Offset	; char to acia
+	CMP	#$D
+	BNE	LFFBC	; not cr
+
+; *******************************************************************************************
+;
+;										Output 10 NULLs to ACIA
+;
+; *******************************************************************************************
+
+TenNulls	PHA
+	TXA
+	PHA
+	LDX	#$A
+	LDA	#0
+LFFB3	JSR	WriteACIA-Offset
+	DEX
+	BNE	LFFB3
+	PLA
+	TAX
+LFFBB	PLA
+LFFBC	RTS
+
+; *******************************************************************************************
+;
+;								Collect three addresses (FE,F9,E4)
+;
+; *******************************************************************************************
+
+Collect3Addr	JSR	Collect2Addr
+	JSR	PrintGreater
+	LDX	#3
+	JSR	LF9B1
+	LDA	CurrentData
+	LDX	$FD
+	STA	$E4
+	STX	$E5
+	RTS
+
+; *******************************************************************************************
+;
+;											Home the Cursor
+;
+; *******************************************************************************************
+
+HomeCursor	LDX	#2
+LFFD3	LDA	$223-1,X
+	STA	$228-1,X
+	STA	$22B-1,X
+	DEX
+	BNE	LFFD3
+	RTS
+
+LFFE0	.BYTE	<ScreenVisibleBottom		; cursor start
+LFFE1	.BYTE	LineLengthMinus1		; line length - 1
+LFFE2	.BYTE	ScreenSize		; screen size 0=1k 1=2k
+
+; *******************************************************************************************
+;
+;										Print a full stop
+;
+; *******************************************************************************************
+
+PrintFullStop	LDA	#'.'
+	JSR	OutputCharacter
+	JMP	PrintAddr
+
+InputCharacter	JMP	($218)		; input  fb46
+OutputCharacter	JMP	($21A)		; output ff9b
+CheckControlC	JMP	($21C)		; ctrl-c fb94
+SetLoadMode	JMP	($21E)		; load   fe70
+SetSaveMode	JMP	($220)		; save   fe7b
+
+	.WORD	NMIHandler		; nmi
+	.WORD	SystemReset		; reset
+	.WORD	IRQHandler		; irq
+
+	.END
